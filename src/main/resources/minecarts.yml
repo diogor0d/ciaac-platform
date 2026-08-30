@@ -1,0 +1,9 @@
+# Os identificadores de máquina permanecem em inglês; os comentários e mensagens são pt-PT.
+schema-version: 1
+enabled: false
+default-terminal-speed-blocks-per-second: 16.0
+worlds: {}
+# worlds:
+#   spawn:
+#     uuid: __SET_ME__
+#     terminal-speed-blocks-per-second: 20.0

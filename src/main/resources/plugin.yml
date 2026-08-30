@@ -1,0 +1,144 @@
+name: CIAACPlatform
+version: '0.1.0-alpha.1'
+main: com.ciaac.minecraft.platform.CiaacPlatformPlugin
+description: Plataforma modular da CIAAC para minijogos, carrinhos, retenção e observabilidade.
+author: CIAAC
+api-version: '26.2'
+load: POSTWORLD
+softdepend:
+  - nLogin
+  - DiscordSRV
+  - Multiverse-Core
+  - Multiverse-Inventories
+  - PlaceholderAPI
+  - WorldGuard
+  - TAB
+  - LuckPerms
+  - Vault
+  - UltraCosmetics
+  - GMusic
+commands:
+  ciaac:
+    description: Consulta e administra módulos da CIAACPlatform.
+    usage: /ciaac carrinhos <estado|recarregar|definir|predefinir|repor|repor-tudo>
+  passaporte:
+    description: Consulta o Passaporte CIAAC, recompensas e classificações.
+    usage: /passaporte [recompensas|classificacao|reclamar|personalizar|admin]
+    permission: ciaac.retention.use
+  minijogos:
+    description: Mostra o estado dos minijogos CIAAC.
+    usage: /minijogos [estado|ajuda|top <jogo> [regras modo]|estatisticas <jogo> [regras modo]|atualizacao]
+    aliases: [minigames]
+    permission: ciaac.minigames.use
+  coliseu:
+    description: Comandos do Coliseu.
+    usage: /coliseu [estado|entrar|sair|pronto|grupo|desafiar|aceitar|aposta|ajuda]
+    aliases: [arena]
+    permission: ciaac.minigames.arena.use
+  buildbattle:
+    description: Comandos do Build Battle.
+    usage: /buildbattle [estado|entrar|sair|tema|ver|avaliar|votar|ajuda]
+    aliases: [bb]
+    permission: ciaac.minigames.buildbattle.use
+  batataquente:
+    description: Comandos do Hot Potato.
+    usage: /batataquente [estado|entrar|sair|ajuda]
+    aliases: [hotpotato]
+    permission: ciaac.minigames.hotpotato.use
+  sumo:
+    description: Comandos do Knockback Sumo.
+    usage: /sumo [estado|entrar|sair|pronto|ajuda]
+    aliases: [knockbacksumo]
+    permission: ciaac.minigames.sumo.use
+  parkour:
+    description: Comandos do Parkour Cronometrado.
+    usage: /parkour [estado|entrar|sair|ajuda]
+    aliases: [checkpointparkour]
+    permission: ciaac.minigames.parkour.use
+  arco:
+    description: Comandos do Campo de Tiro com Arco.
+    usage: /arco [estado|entrar|sair|ajuda]
+    aliases: [archery]
+    permission: ciaac.minigames.archery.use
+  bigornas:
+    description: Comandos da Fuga às Bigornas.
+    usage: /bigornas [estado|entrar|sair|ajuda]
+    aliases: [anvildodge]
+    permission: ciaac.minigames.anvildodge.use
+  cores:
+    description: Comandos do Chão de Cores.
+    usage: /cores [estado|entrar|sair|ajuda]
+    aliases: [colorfloor]
+    permission: ciaac.minigames.colorfloor.use
+  elytra:
+    description: Comandos dos Anéis de Elytra.
+    usage: /elytra [estado|entrar|sair|ajuda]
+    aliases: [elytrarings]
+    permission: ciaac.minigames.elytra.use
+permissions:
+  ciaac.minecarts.view:
+    description: Permite consultar o estado da melhoria dos carrinhos.
+    default: true
+  ciaac.minecarts.reload:
+    description: Permite recarregar apenas a configuração dos carrinhos.
+    default: false
+  ciaac.minecarts.test:
+    description: Permite aplicar e repor velocidades temporárias de teste dos carrinhos.
+    default: false
+  ciaac.retention.use:
+    description: Permite consultar o Passaporte CIAAC.
+    default: true
+  ciaac.retention.claim:
+    description: Permite reclamar recompensas externas já conquistadas.
+    default: true
+  ciaac.retention.particles:
+    description: Permite personalizar partículas conquistadas no spawn seguro.
+    default: true
+  ciaac.retention.leaderboard:
+    description: Permite consultar as classificações públicas.
+    default: true
+  ciaac.retention.admin.view:
+    description: Permite consultar o estado administrativo do Passaporte.
+    default: false
+  ciaac.retention.admin.review:
+    description: Permite rever entregas de recompensa pendentes.
+    default: false
+  ciaac.retention.admin.season:
+    description: Permite administrar o ciclo de temporadas.
+    default: false
+  ciaac.retention.excluded:
+    description: Exclui uma sessão elevada, de recuperação ou quarentena do Passaporte.
+    default: false
+  ciaac.minigames.use:
+    description: Permite consultar os minijogos.
+    default: true
+  ciaac.minigames.arena.use:
+    description: Permite usar o Coliseu.
+    default: true
+  ciaac.minigames.buildbattle.use:
+    description: Permite usar o Build Battle.
+    default: true
+  ciaac.minigames.hotpotato.use:
+    description: Permite usar o Hot Potato.
+    default: true
+  ciaac.minigames.sumo.use:
+    description: Permite usar o Knockback Sumo.
+    default: true
+  ciaac.minigames.parkour.use:
+    description: Permite usar o Parkour Cronometrado.
+    default: true
+  ciaac.minigames.archery.use:
+    description: Permite usar o Campo de Tiro com Arco.
+    default: true
+  ciaac.minigames.anvildodge.use:
+    description: Permite usar a Fuga às Bigornas.
+    default: true
+  ciaac.minigames.colorfloor.use:
+    description: Permite usar o Chão de Cores.
+    default: true
+  ciaac.minigames.elytra.use:
+    description: Permite usar os Anéis de Elytra.
+    default: true
+  ciaac.minigames.admin:
+    description: Permite administrar a configuração dos minijogos.
+    default: false

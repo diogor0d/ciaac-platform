@@ -1,0 +1,29 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+usage() {
+  echo "uso: create-release-manifest <release-id> <versão> <jar> <saída>" >&2
+  exit 64
+}
+
+[[ $# -eq 4 ]] || usage
+release_id=$1
+version=$2
+jar=$3
+output=$4
+[[ "$release_id" =~ ^[1-9][0-9]*$ ]] || usage
+[[ "$version" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$ ]] || usage
+[[ -f "$jar" && ! -L "$jar" && -s "$jar" ]] || usage
+[[ ! -e "$output" && ! -L "$output" ]] || usage
+
+size=$(wc -c < "$jar" | tr -d '[:space:]')
+sha256=$(sha256sum "$jar" | awk '{print $1}')
+printf '%s\n' \
+  'format=ciaac-platform-update-v1' \
+  "release-id=$release_id" \
+  "version=$version" \
+  'artifact=ciaac-platform.jar' \
+  "size=$size" \
+  "sha256=$sha256" \
+  'plugin-name=CIAACPlatform' \
+  'plugin-main=com.ciaac.minecraft.platform.CiaacPlatformPlugin' > "$output"

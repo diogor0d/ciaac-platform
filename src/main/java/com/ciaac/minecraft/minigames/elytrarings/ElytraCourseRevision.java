@@ -1,0 +1,3 @@
+package com.ciaac.minecraft.minigames.elytrarings;
+import java.util.*;
+public record ElytraCourseRevision(String revision,String worldId,List<RingCheckpoint> rings){public ElytraCourseRevision{revision=Objects.requireNonNull(revision).trim();worldId=Objects.requireNonNull(worldId).trim();if(!revision.matches("[A-Za-z0-9][A-Za-z0-9_.-]{0,31}")||worldId.isBlank())throw new IllegalArgumentException("invalid course identity");rings=List.copyOf(rings);if(rings.size()<2||rings.stream().map(RingCheckpoint::order).distinct().count()!=rings.size())throw new IllegalArgumentException("course needs unique rings");for(int i=0;i<rings.size();i++)if(rings.get(i).order()!=i+1)throw new IllegalArgumentException("ring orders must be contiguous");}}

@@ -1,0 +1,10 @@
+package com.ciaac.minecraft.minigames.archeryrange;
+import java.util.*;
+/** Lane score domain; adapters tag and confine projectiles and enforce the spawn lane boundary. */
+public final class ArcherySession{
+ private final UUID id,player;private final ArcheryConfig config;private final Set<UUID> events=new HashSet<>();private ArcheryPhase phase=ArcheryPhase.READY;private int shots,score,bullseyes;private ArcheryResult result;
+ public ArcherySession(UUID id,UUID player,ArcheryConfig c){this.id=Objects.requireNonNull(id);this.player=Objects.requireNonNull(player);config=Objects.requireNonNull(c);}public synchronized ArcheryPhase phase(){return phase;}public synchronized Optional<ArcheryResult> result(){return Optional.ofNullable(result);}
+ public synchronized void start(UUID event){event(event);if(phase!=ArcheryPhase.READY)throw new IllegalStateException("not ready");phase=ArcheryPhase.RUNNING;}
+ public synchronized void shot(UUID source,int points,boolean bullseye,UUID event){event(event);if(phase!=ArcheryPhase.RUNNING)throw new IllegalStateException("not running");if(!player.equals(source))throw new IllegalArgumentException("unknown player");if(points<0||points>config.maxScorePerShot())throw new IllegalArgumentException("score out of bounds");if(shots>=config.shotCount())throw new IllegalStateException("shot limit reached");shots++;score+=points;if(bullseye)bullseyes++;if(shots==config.shotCount()){phase=ArcheryPhase.FINISHED;result=new ArcheryResult(UUID.randomUUID(),id,config.rulesetRevision(),config.laneId(),shots,score,bullseyes,"COMPLETED");}}
+ public synchronized void cancel(UUID event){event(event);if(phase==ArcheryPhase.CLOSED)throw new IllegalStateException("closed");phase=ArcheryPhase.CANCELLED;}public synchronized void close(UUID event){event(event);if(phase!=ArcheryPhase.FINISHED&&phase!=ArcheryPhase.CANCELLED)throw new IllegalStateException("not terminal");phase=ArcheryPhase.CLOSED;}private void event(UUID e){if(!events.add(Objects.requireNonNull(e)))throw new IllegalStateException("duplicate event");}
+}

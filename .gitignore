@@ -1,0 +1,15 @@
+/target/
+/.idea/
+/.vscode/
+*.iml
+*.log
+*.db
+*.sqlite
+*.sqlite3
+*.pem
+*.key
+*.p12
+*.jks
+.env
+.env.*
+!/src/main/resources/**

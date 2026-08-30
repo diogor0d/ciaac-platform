@@ -1,0 +1,52 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+usage() {
+  echo "usage: sign-release-manifest --key-base64-stdin --input <manifest> --output <signature>" >&2
+  exit 64
+}
+
+[[ $# -eq 5 && "$1" == "--key-base64-stdin" && "$2" == "--input" && "$4" == "--output" ]] || usage
+input=$3
+output=$5
+[[ -f "$input" && ! -L "$input" && -s "$input" ]] || {
+  echo "manifest input must be a non-empty regular file" >&2
+  exit 65
+}
+[[ ! -e "$output" && ! -L "$output" ]] || {
+  echo "signature output already exists" >&2
+  exit 73
+}
+command -v openssl >/dev/null 2>&1 || {
+  echo "OpenSSL is required" >&2
+  exit 69
+}
+
+umask 077
+temporary_root=${RUNNER_TEMP:-/tmp}
+[[ -d "$temporary_root" && ! -L "$temporary_root" ]] || {
+  echo "temporary directory is unsafe" >&2
+  exit 73
+}
+temporary=$(mktemp -d "$temporary_root/ciaac-release-sign.XXXXXXXX")
+cleanup() {
+  unset private_key_base64
+  rm -rf -- "$temporary"
+}
+trap cleanup EXIT HUP INT TERM
+
+IFS= read -r private_key_base64 || true
+[[ -n "${private_key_base64:-}" && ${#private_key_base64} -le 8192 ]] || {
+  echo "private key input is empty or too large" >&2
+  exit 65
+}
+printf '%s' "$private_key_base64" | base64 --decode > "$temporary/private-key.der"
+unset private_key_base64
+openssl pkey -inform DER -in "$temporary/private-key.der" -noout >/dev/null
+openssl pkeyutl -sign -rawin -keyform DER -inkey "$temporary/private-key.der" \
+  -in "$input" -out "$temporary/signature.bin"
+[[ $(wc -c < "$temporary/signature.bin") -eq 64 ]] || {
+  echo "signer did not produce a 64-byte Ed25519 signature" >&2
+  exit 70
+}
+base64 --wrap=0 < "$temporary/signature.bin" > "$output"

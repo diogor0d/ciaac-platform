@@ -1,0 +1,107 @@
+name: Publicar versão assinada
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Etiqueta canónica, por exemplo v0.1.0-alpha.1
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    environment: release
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Obter código
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Preparar Java 25
+        uses: actions/setup-java@c5195efecf7bdfc987ee8bae7a71cb8b11521c00 # v4.7.1
+        with:
+          distribution: temurin
+          java-version: '25'
+          cache: maven
+      - name: Validar versão e construir
+        id: build
+        shell: bash
+        run: |
+          set -euo pipefail
+          version=$(mvn --batch-mode --no-transfer-progress help:evaluate -Dexpression=project.version -q -DforceStdout)
+          [[ "${{ inputs.tag }}" == "v$version" ]]
+          grep -Fqx "version: '$version'" src/main/resources/plugin.yml
+          mvn --batch-mode --no-transfer-progress clean verify
+          mkdir release-assets
+          cp "target/CIAACPlatform-$version.jar" release-assets/ciaac-platform.jar
+          printf 'version=%s\n' "$version" >> "$GITHUB_OUTPUT"
+      - name: Confirmar releases imutáveis
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh api "repos/$GITHUB_REPOSITORY/immutable-releases" >/dev/null
+      - name: Criar rascunho e obter ID
+        id: draft
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo 'A etiqueta ou release já existe.' >&2
+            exit 1
+          fi
+          prerelease=()
+          [[ "$TAG" == *-* ]] && prerelease=(--prerelease)
+          gh release create "$TAG" --draft "${prerelease[@]}" --target "$GITHUB_SHA" \
+            --title "$TAG" --notes "Versão experimental da CIAACPlatform. Consulta README.md e docs/RELEASES.md antes de utilizar."
+          release_id=$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$TAG" --jq .id)
+          [[ "$release_id" =~ ^[1-9][0-9]*$ ]]
+          printf 'release_id=%s\n' "$release_id" >> "$GITHUB_OUTPUT"
+      - name: Gerar, assinar e verificar manifesto
+        env:
+          CIAAC_RELEASE_ED25519_PRIVATE_KEY_BASE64: ${{ secrets.CIAAC_RELEASE_ED25519_PRIVATE_KEY_BASE64 }}
+          RELEASE_ID: ${{ steps.draft.outputs.release_id }}
+          VERSION: ${{ steps.build.outputs.version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$CIAAC_RELEASE_ED25519_PRIVATE_KEY_BASE64"
+          chmod +x tools/create-release-manifest tools/sign-release-manifest
+          tools/create-release-manifest "$RELEASE_ID" "$VERSION" release-assets/ciaac-platform.jar \
+            release-assets/ciaac-platform-update.properties
+          printf '%s\n' "$CIAAC_RELEASE_ED25519_PRIVATE_KEY_BASE64" | \
+            tools/sign-release-manifest --key-base64-stdin \
+              --input release-assets/ciaac-platform-update.properties \
+              --output release-assets/ciaac-platform-update.properties.sig
+          test "$(wc -c < release-assets/ciaac-platform-update.properties.sig)" -eq 88
+          ! grep -q '[[:space:]]' release-assets/ciaac-platform-update.properties.sig
+          unset CIAAC_RELEASE_ED25519_PRIVATE_KEY_BASE64
+          base64 --decode release-keys/ciaac-platform-ed25519-public.der.b64 > "$RUNNER_TEMP/ciaac-release-public.der"
+          base64 --decode release-assets/ciaac-platform-update.properties.sig > "$RUNNER_TEMP/ciaac-release-signature.bin"
+          openssl pkeyutl -verify -pubin -keyform DER \
+            -inkey "$RUNNER_TEMP/ciaac-release-public.der" -rawin \
+            -in release-assets/ciaac-platform-update.properties \
+            -sigfile "$RUNNER_TEMP/ciaac-release-signature.bin"
+          test "$(find release-assets -maxdepth 1 -type f | wc -l)" -eq 3
+      - name: Carregar e publicar
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh release upload "$TAG" release-assets/ciaac-platform.jar \
+            release-assets/ciaac-platform-update.properties \
+            release-assets/ciaac-platform-update.properties.sig
+          gh release edit "$TAG" --draft=false
+          gh api "repos/$GITHUB_REPOSITORY/releases/tags/$TAG" \
+            --jq 'select(.draft == false and .immutable == true) | .html_url'

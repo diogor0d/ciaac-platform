@@ -1,0 +1,3 @@
+package com.ciaac.minecraft.minigames.elytrarings;
+import com.ciaac.minecraft.minigames.isolation.IsolationPolicy;import java.time.Duration;import java.util.Objects;
+public record ElytraRingsConfig(Duration timeout,ElytraCourseRevision course,IsolationPolicy isolation){public ElytraRingsConfig{if(timeout==null||timeout.isNegative()||timeout.isZero())throw new IllegalArgumentException("timeout must be positive");course=Objects.requireNonNull(course);isolation=Objects.requireNonNull(isolation);}public static ElytraRingsConfig dedicatedWorld(Duration t,ElytraCourseRevision c){return new ElytraRingsConfig(t,c,IsolationPolicy.strictNoProgress());}}

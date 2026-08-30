@@ -1,0 +1,311 @@
+schema-version: 2
+locale: pt-PT
+
+# Marco da implementação de origem. Manter false até todos os módulos ativos,
+# o adaptador nLogin, cada faceta de snapshot, mundo/região e recuperação serem
+# validados num servidor descartável.
+admission:
+  enabled: false
+  require-authenticated-adapter: true
+  block-while-recovery-pending: true
+
+progress-isolation:
+  inventory: true
+  item-metadata-and-durability: true
+  armor: true
+  off-hand: true
+  cursor: true
+  ender-chest: true
+  experience: true
+  health-food-effects: true
+  location-flight-gamemode: true
+  vanilla-statistics: true
+  advancements: true
+  economy-permissions: true
+  claims-homes: true
+  scoreboards-cooldowns: true
+  temporary-world-blocks-and-entities: true
+
+persistence:
+  sqlite-file: platform.sqlite
+
+# A conversa pública só pode ser emitida após aprovação explícita do aviso de
+# privacidade. Mensagens privadas e argumentos de comandos nunca são recolhidos.
+security-events:
+  public-chat-enabled: false
+  public-chat-privacy-notice-approved: false
+  snapshot-journal-directory: recovery
+  busy-timeout-milliseconds: 5000
+  retention:
+    snapshots-after-safe-restore-hours: 24
+    match-evidence-days: 365
+    audit-days: 180
+
+# Preparação opcional de versões assinadas. Desativada até o operador fixar o
+# repositório, artefactos e chave pública Ed25519 exatos; o plugin não aceita nem
+# guarda credenciais GitHub. Um JAR preparado só é consumido após um reinício
+# controlado do Paper. A opção para servidor vazio chama Server.restart(), não
+# expulsa jogadores nem executa comandos e exige script/supervisor configurado.
+updater:
+  enabled: false
+  github:
+    owner: diogor0d
+    repository: ciaac-platform
+    # false = apenas versões estáveis; true = inclui versões alpha/beta assinadas.
+    allow-prereleases: false
+  assets:
+    jar: ciaac-platform.jar
+    manifest: ciaac-platform-update.properties
+    signature: ciaac-platform-update.properties.sig
+  trusted-ed25519-public-key: MCowBQYDK2VwAyEAK4f8q4X2udLqLijNgbPxnsevr9KrG9tRm3lehbznoE4=
+  connect-timeout-seconds: 5
+  request-timeout-seconds: 20
+  maximum-jar-bytes: 33554432
+  # Nunca ativar até configurar o script/supervisor de reinício do Paper.
+  restart-empty-server-after-staging: false
+
+announcements:
+  minecraft:
+    waiting-cooldown-seconds: 300
+  discord:
+    enabled: false
+    channel-name: minigames
+    waiting-cooldown-seconds: 900
+    announce-starting: true
+    announce-winner: true
+
+displays:
+  enabled: false
+  refresh-ticks: 100
+  entries: {}
+  # Exemplo (remover `entries: {}` antes de ativar):
+  # entries:
+  #   coliseu-spawn:
+  #     game: arena
+  #     world-id: __SET_ME__
+  #     world-name: __SET_ME__
+  #     x: 0
+  #     y: 0
+  #     z: 0
+  #     yaw: 0
+  #     pitch: 0
+  #     width: 2.5
+  #     height: 2.0
+  #     refresh-seconds: 5
+  #     join-command: /coliseu entrar
+
+modules:
+  arena:
+    enabled: false
+    world: {name: __SET_ME__, uuid: __SET_ME__}
+    regions:
+      combat-floor: {min: [__SET_ME__], max: [__SET_ME__]}
+      spectator-benches: {min: [__SET_ME__], max: [__SET_ME__]}
+    locations:
+      team-a: {x: 0, y: 0, z: 0, yaw: 0, pitch: 0}
+      team-b: {x: 0, y: 0, z: 0, yaw: 180, pitch: 0}
+      exit: {x: 0, y: 0, z: 0, yaw: 0, pitch: 0}
+      recovery: {x: 0, y: 0, z: 0, yaw: 0, pitch: 0}
+    minimum-players: 2
+    max-team-size: 3
+    allow-asymmetric-formats: true
+    allowed-asymmetric-formats: [2v3, 3v2]
+    round-seconds: 300
+    reconnect-grace-seconds: 30
+    friendly-fire: false
+    kit-modes: [fixed, mirrored-survival, staked-survival]
+    fixed-kits: {}
+    # Na sobrevivência protegida, estes itens ficam apenas fora da cópia
+    # temporária de combate e regressam intactos com o snapshot de sobrevivência.
+    protected-survival:
+      prohibited-materials:
+        - ENDER_PEARL
+        - CHORUS_FRUIT
+        - ELYTRA
+        - FIREWORK_ROCKET
+        - WATER_BUCKET
+        - LAVA_BUCKET
+        - POWDER_SNOW_BUCKET
+        - FLINT_AND_STEEL
+        - FIRE_CHARGE
+        - TNT
+        - TNT_MINECART
+        - END_CRYSTAL
+        - RESPAWN_ANCHOR
+        - ARMOR_STAND
+        - ITEM_FRAME
+        - GLOW_ITEM_FRAME
+        - OAK_BOAT
+        - MINECART
+    staked-survival:
+      enabled: false
+      allowed-formats: [1v1]
+      # Um item proibido rejeita a oferta completa sem remover nada.
+      # Estes padrões excluem ferramentas comuns de fuga, terreno e explosão.
+      prohibited-materials:
+        - ENDER_PEARL
+        - CHORUS_FRUIT
+        - ELYTRA
+        - FIREWORK_ROCKET
+        - WATER_BUCKET
+        - LAVA_BUCKET
+        - POWDER_SNOW_BUCKET
+        - FLINT_AND_STEEL
+        - FIRE_CHARGE
+        - TNT
+        - TNT_MINECART
+        - END_CRYSTAL
+        - RESPAWN_ANCHOR
+      consent-timeout-seconds: 60
+      no-contest-policy: refund
+
+  build-battle:
+    enabled: false
+    world: {name: __SET_ME__, uuid: __SET_ME__}
+    world-template-marker: __SET_ME__
+    regions: {}
+    plots: {}
+    # Exemplo (cada lugar ativo precisa da sua região e ponto de entrada):
+    # regions:
+    #   plot-01: {min: [0, 64, 0], max: [26, 90, 26]}
+    # plots:
+    #   plot-01:
+    #     region-id: plot-01
+    #     spawn: {x: 13, y: 65, z: 13, yaw: 0, pitch: 0}
+    locations:
+      lobby: {x: 0, y: 0, z: 0, yaw: 0, pitch: 0}
+      exit: {x: 0, y: 0, z: 0, yaw: 0, pitch: 0}
+      recovery: {x: 0, y: 0, z: 0, yaw: 0, pitch: 0}
+    minimum-players: 2
+    maximum-players: 12
+    queue-seconds: 60
+    theme-vote-seconds: 20
+    build-seconds: 300
+    plot-size: 27
+    plot-spacing: 8
+    theme-pool: []
+    voting:
+      seconds-per-plot: 15
+      minimum-score: 1
+      maximum-score: 5
+      completion-policy: every-eligible-voter-rates-every-other-plot
+      tie-policy: average-then-total-then-stable-plot-id
+    reset: {strategy: template-copy, timeout-seconds: 120}
+
+  hot-potato:
+    enabled: false
+    world: {name: __SET_ME__, uuid: __SET_ME__}
+    regions:
+      arena: {min: [__SET_ME__], max: [__SET_ME__]}
+    locations:
+      lobby: {x: 0, y: 0, z: 0, yaw: 0, pitch: 0}
+      arena: {x: 0, y: 0, z: 0, yaw: 0, pitch: 0}
+      exit: {x: 0, y: 0, z: 0, yaw: 0, pitch: 0}
+      recovery: {x: 0, y: 0, z: 0, yaw: 0, pitch: 0}
+    minimum-players: 3
+    maximum-players: 12
+    initial-fuse-seconds: 20
+    minimum-fuse-seconds: 6
+    fuse-reduction-per-round-seconds: 1
+    pass-cooldown-milliseconds: 750
+    pass-range-blocks: 3.5
+    match-timeout-seconds: 900
+
+  knockback-sumo:
+    enabled: false
+    world: {name: __SET_ME__, uuid: __SET_ME__}
+    regions:
+      platform: {min: [__SET_ME__], max: [__SET_ME__]}
+      boundary: {min: [__SET_ME__], max: [__SET_ME__]}
+    locations:
+      side-a: {x: 0, y: 0, z: 0, yaw: 0, pitch: 0}
+      side-b: {x: 0, y: 0, z: 0, yaw: 180, pitch: 0}
+      exit: {x: 0, y: 0, z: 0, yaw: 0, pitch: 0}
+    minimum-players: 2
+    maximum-players: 2
+    best-of-rounds: 3
+    round-timeout-seconds: 90
+    fall-threshold-y: 0
+    knockback-item-material: STICK
+    knockback-level: 2
+
+  checkpoint-parkour:
+    enabled: false
+    world: {name: __SET_ME__, uuid: __SET_ME__}
+    regions:
+      course-boundary: {min: [__SET_ME__], max: [__SET_ME__]}
+    locations:
+      start: {x: 0, y: 0, z: 0, yaw: 0, pitch: 0}
+      exit: {x: 0, y: 0, z: 0, yaw: 0, pitch: 0}
+    checkpoint-order: []
+    checkpoint-regions: {}
+    run-timeout-seconds: 600
+    fall-penalty-milliseconds: 3000
+    concurrent-runners: 8
+    hide-other-runners: true
+
+  archery-range:
+    enabled: false
+    world: {name: __SET_ME__, uuid: __SET_ME__}
+    regions:
+      range-boundary: {min: [__SET_ME__], max: [__SET_ME__]}
+    locations:
+      exit: {x: 0, y: 0, z: 0, yaw: 0, pitch: 0}
+    lanes: {}
+    shots-per-attempt: 10
+    attempt-timeout-seconds: 120
+    target-scores: {bullseye: 10, inner: 7, middle: 5, outer: 2}
+    bow-material: BOW
+
+  anvil-dodge:
+    enabled: false
+    world: {name: __SET_ME__, uuid: __SET_ME__}
+    regions:
+      floor: {min: [__SET_ME__], max: [__SET_ME__]}
+      boundary: {min: [__SET_ME__], max: [__SET_ME__]}
+    locations:
+      start: {x: 0, y: 0, z: 0, yaw: 0, pitch: 0}
+      exit: {x: 0, y: 0, z: 0, yaw: 0, pitch: 0}
+    minimum-players: 1
+    maximum-players: 12
+    wave-count: 20
+    warning-ticks: 30
+    wave-interval-ticks: 60
+    hazards-per-wave-start: 3
+    hazards-per-wave-increment: 1
+
+  color-floor:
+    enabled: false
+    world: {name: __SET_ME__, uuid: __SET_ME__}
+    regions:
+      floor: {min: [__SET_ME__], max: [__SET_ME__]}
+      boundary: {min: [__SET_ME__], max: [__SET_ME__]}
+    locations:
+      start: {x: 0, y: 0, z: 0, yaw: 0, pitch: 0}
+      exit: {x: 0, y: 0, z: 0, yaw: 0, pitch: 0}
+    minimum-players: 2
+    maximum-players: 16
+    rounds: 20
+    announce-ticks: 60
+    unsafe-ticks: 40
+    palette: [RED, BLUE, GREEN, YELLOW, PURPLE, ORANGE]
+    restore-strategy: immutable-template
+
+  elytra-rings:
+    enabled: false
+    world: {name: __SET_ME__, uuid: __SET_ME__}
+    world-template-marker: __SET_ME__
+    regions:
+      course-boundary: {min: [__SET_ME__], max: [__SET_ME__]}
+    locations:
+      start: {x: 0, y: 0, z: 0, yaw: 0, pitch: 0}
+      exit: {x: 0, y: 0, z: 0, yaw: 0, pitch: 0}
+    ring-order: []
+    ring-regions: {}
+    course-revision: __SET_ME__
+    run-timeout-seconds: 600
+    preload-radius-chunks: 2
+    firework-rockets: 32
+    allow-rockets: true
+    # O adaptador atual de percurso fixo admite um corredor cronometrado de cada vez.
+    concurrent-runners: 1

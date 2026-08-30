@@ -1,0 +1,38 @@
+# Sistema de retenção Passaporte CIAAC. Permanece desativado até validar nLogin,
+# a migração SQLite v5→v6 e a zona segura num servidor Paper descartável.
+enabled: false
+timezone: Europe/Lisbon
+season:
+  anchor: 2026-09-15
+  calendar-months: 3
+  claim-grace-days: 14
+qualification:
+  authenticated-join-minutes: 10
+  active-sampled-minutes: 15
+  weekly-active-days: 3
+points:
+  join-day: 1
+  active-day: 10
+  weekly-objective: 25
+privacy:
+  detailed-event-months: 12
+presentation:
+  placeholders-enabled: false
+  safezone-displays-enabled: false
+  particles-enabled: false
+  safezone:
+    world:
+      name: spawn
+      uuid: __SET_ME__
+    center: {x: 0.0, y: 64.0, z: 0.0, radius: 32.0}
+    current-ranking: {x: 2.0, y: 66.0, z: 0.0}
+    hall-of-fame: {x: -2.0, y: 66.0, z: 0.0}
+rewards:
+  join-streak-milestones: [3, 7, 14, 30, 60, 90]
+  weekly-completion-milestones: [3, 6, 9, 12]
+  passport-point-milestones: [50, 150, 300, 600, 1000]
+integrations:
+  ultracosmetics: {enabled: false}
+  gmusic: {enabled: false}
+  luckperms: {enabled: false}
+  vault: {enabled: false}

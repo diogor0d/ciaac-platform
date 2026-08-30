@@ -1,0 +1,3 @@
+package com.ciaac.minecraft.minigames.archeryrange;
+import static org.junit.jupiter.api.Assertions.*;import java.util.*;import org.junit.jupiter.api.Test;
+class ArcherySessionTest{@Test void scoreIsBoundedAndShotEventsAreUnique(){UUID p=UUID.randomUUID();var s=new ArcherySession(UUID.randomUUID(),p,new ArcheryConfig("r1",2,2,10));s.start(UUID.randomUUID());UUID e=UUID.randomUUID();s.shot(p,10,true,e);assertThrows(IllegalStateException.class,()->s.shot(p,1,false,e));assertThrows(IllegalArgumentException.class,()->s.shot(p,11,false,UUID.randomUUID()));s.shot(p,5,false,UUID.randomUUID());assertEquals(15,s.result().orElseThrow().score());}}

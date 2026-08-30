@@ -1,0 +1,2 @@
+package com.ciaac.minecraft.minigames.elytrarings;import java.time.Duration;import java.util.*;
+public record ElytraRingsResult(UUID matchId,String revision,UUID player,boolean valid,Duration elapsed,List<Duration> splits,int resets,String reason){public ElytraRingsResult{Objects.requireNonNull(matchId);Objects.requireNonNull(player);Objects.requireNonNull(revision);if(elapsed==null||elapsed.isNegative()||resets<0)throw new IllegalArgumentException("invalid result");splits=List.copyOf(splits);reason=Objects.requireNonNull(reason);}}
