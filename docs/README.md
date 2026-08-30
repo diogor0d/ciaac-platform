@@ -38,5 +38,5 @@ execução Paper continuam por validar.
 | [Artefactos de templates nativos](template-artifacts.md) | Formato, checksum e aplicação limitada para Build Battle e Piso das Cores | `SOURCE-IMPLEMENTED`; artefactos, chunks e mutações Paper `RUNTIME-UNVERIFIED` |
 | [Atualizador de versões](release-updater.md) | Manifesto assinado, preparação, reinício opcional e cache | `SOURCE-IMPLEMENTED`, desativado por omissão; publicação, consumo Paper e reinício `RUNTIME-UNVERIFIED` |
 
-Para decisões, operação e evidência datada, regressar à matriz
-[Documentação relacionada](../README.md#documentação-relacionada) do componente.
+Para decisões, operação e evidência datada, regressar ao
+[mapa da documentação](../README.md#mapa-da-documentação) do componente.
