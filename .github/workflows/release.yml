@@ -99,20 +99,10 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          upload_asset() {
-            local path="$1"
-            local media_type="$2"
-            local name
-            name=$(basename "$path")
-            gh api --method POST \
-              -H "Content-Type: $media_type" \
-              "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID/assets?name=$name" \
-              --input "$path" >/dev/null
-          }
-
-          upload_asset release-assets/ciaac-platform.jar application/java-archive
-          upload_asset release-assets/ciaac-platform-update.properties text/plain
-          upload_asset release-assets/ciaac-platform-update.properties.sig text/plain
+          gh release upload "$TAG" \
+            release-assets/ciaac-platform.jar \
+            release-assets/ciaac-platform-update.properties \
+            release-assets/ciaac-platform-update.properties.sig
 
           prerelease=false
           [[ "$TAG" == *-* ]] && prerelease=true

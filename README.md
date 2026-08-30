@@ -22,7 +22,7 @@
 
 ---
 
-CIAACPlatform é o plugin Paper modular da **CIAAC — Universidade de Coimbra**.
+CIAACPlatform é o plugin Paper modular do **CIAAC — Universidade de Coimbra**.
 Reúne minijogos, controlo de carrinhos, o Passaporte CIAAC e observabilidade
 local num artefacto com fronteiras explícitas de autenticação, inventário,
 economia e recuperação.

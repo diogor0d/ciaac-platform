@@ -1,7 +1,7 @@
 name: CIAACPlatform
 version: '0.1.0-alpha.1'
 main: com.ciaac.minecraft.platform.CiaacPlatformPlugin
-description: Plataforma modular da CIAAC para minijogos, carrinhos, retenção e observabilidade.
+description: Plataforma modular do CIAAC para minijogos, carrinhos, retenção e observabilidade.
 author: CIAAC
 api-version: '26.2'
 load: POSTWORLD

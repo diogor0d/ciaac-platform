@@ -36,8 +36,8 @@ Impressão digital SHA-256 da chave pública inicial:
    exata. O ambiente `release` deve exigir revisão humana.
 6. O workflow cria o rascunho pela API e conserva o ID devolvido na própria
    resposta; não usa o endpoint por etiqueta, que não resolve rascunhos. Gera e
-   assina o manifesto, carrega os três artefactos pelo ID, valida nomes, estados,
-   tamanhos, etiqueta e commit, e só depois publica o rascunho.
+   assina o manifesto, carrega os três artefactos no rascunho, valida pelo ID os
+   nomes, estados, tamanhos, etiqueta e commit, e só depois o publica.
 7. Confirmar pela API: `draft=false`, marcação `prerelease` correta,
    `immutable=true`, commit esperado e três nomes/tamanhos/digests esperados.
 
