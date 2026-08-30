@@ -30,12 +30,13 @@ Impressão digital SHA-256 da chave pública inicial:
 1. Alterar `pom.xml` e `plugin.yml` para a mesma versão SemVer e rever a diff.
 2. Executar `mvn clean verify` e a verificação de conteúdo sensível.
 3. Fazer merge da revisão aprovada no ramo predefinido.
-4. Executar manualmente o workflow «Publicar versão assinada» com a etiqueta
+4. Confirmar nas definições administrativas que as releases imutáveis estão
+   ativas. O `GITHUB_TOKEN` do workflow não pode consultar essa definição.
+5. Executar manualmente o workflow «Publicar versão assinada» com a etiqueta
    exata. O ambiente `release` deve exigir revisão humana.
-5. O workflow confirma que as releases imutáveis estão ativas, cria um
-   rascunho, obtém o ID, gera e assina o manifesto, verifica localmente os três
-   artefactos e só depois publica o rascunho.
-6. Confirmar pela API: `draft=false`, marcação `prerelease` correta,
+6. O workflow cria um rascunho, obtém o ID, gera e assina o manifesto, verifica
+   localmente os três artefactos e só depois publica o rascunho.
+7. Confirmar pela API: `draft=false`, marcação `prerelease` correta,
    `immutable=true`, commit esperado e três nomes/tamanhos/digests esperados.
 
 Um rascunho deixado por uma falha não deve ser publicado ou reutilizado sem

@@ -43,10 +43,6 @@ jobs:
           mkdir release-assets
           cp "target/CIAACPlatform-$version.jar" release-assets/ciaac-platform.jar
           printf 'version=%s\n' "$version" >> "$GITHUB_OUTPUT"
-      - name: Confirmar releases imutáveis
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: gh api "repos/$GITHUB_REPOSITORY/immutable-releases" >/dev/null
       - name: Criar rascunho e obter ID
         id: draft
         env:
@@ -92,7 +88,7 @@ jobs:
             -in release-assets/ciaac-platform-update.properties \
             -sigfile "$RUNNER_TEMP/ciaac-release-signature.bin"
           test "$(find release-assets -maxdepth 1 -type f | wc -l)" -eq 3
-      - name: Carregar e publicar
+      - name: Carregar, publicar e confirmar imutabilidade
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ inputs.tag }}
