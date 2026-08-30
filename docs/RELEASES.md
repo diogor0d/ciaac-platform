@@ -34,8 +34,10 @@ Impressão digital SHA-256 da chave pública inicial:
    ativas. O `GITHUB_TOKEN` do workflow não pode consultar essa definição.
 5. Executar manualmente o workflow «Publicar versão assinada» com a etiqueta
    exata. O ambiente `release` deve exigir revisão humana.
-6. O workflow cria um rascunho, obtém o ID, gera e assina o manifesto, verifica
-   localmente os três artefactos e só depois publica o rascunho.
+6. O workflow cria o rascunho pela API e conserva o ID devolvido na própria
+   resposta; não usa o endpoint por etiqueta, que não resolve rascunhos. Gera e
+   assina o manifesto, carrega os três artefactos pelo ID, valida nomes, estados,
+   tamanhos, etiqueta e commit, e só depois publica o rascunho.
 7. Confirmar pela API: `draft=false`, marcação `prerelease` correta,
    `immutable=true`, commit esperado e três nomes/tamanhos/digests esperados.
 

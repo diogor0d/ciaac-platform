@@ -33,11 +33,13 @@ jobs:
           cache: maven
       - name: Validar versão e construir
         id: build
+        env:
+          TAG: ${{ inputs.tag }}
         shell: bash
         run: |
           set -euo pipefail
           version=$(mvn --batch-mode --no-transfer-progress help:evaluate -Dexpression=project.version -q -DforceStdout)
-          [[ "${{ inputs.tag }}" == "v$version" ]]
+          [[ "$TAG" == "v$version" ]]
           grep -Fqx "version: '$version'" src/main/resources/plugin.yml
           mvn --batch-mode --no-transfer-progress clean verify
           mkdir release-assets
@@ -51,15 +53,16 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          if gh release view "$TAG" >/dev/null 2>&1; then
-            echo 'A etiqueta ou release já existe.' >&2
-            exit 1
-          fi
-          prerelease=()
-          [[ "$TAG" == *-* ]] && prerelease=(--prerelease)
-          gh release create "$TAG" --draft "${prerelease[@]}" --target "$GITHUB_SHA" \
-            --title "$TAG" --notes "Versão experimental da CIAACPlatform. Consulta README.md e docs/RELEASES.md antes de utilizar."
-          release_id=$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$TAG" --jq .id)
+          prerelease=false
+          [[ "$TAG" == *-* ]] && prerelease=true
+          release_id=$(gh api --method POST "repos/$GITHUB_REPOSITORY/releases" \
+            -f tag_name="$TAG" \
+            -f target_commitish="$GITHUB_SHA" \
+            -f name="$TAG" \
+            -f body='Versão experimental da CIAACPlatform. Consulta README.md e docs/RELEASES.md antes de utilizar.' \
+            -F draft=true \
+            -F prerelease="$prerelease" \
+            --jq .id)
           [[ "$release_id" =~ ^[1-9][0-9]*$ ]]
           printf 'release_id=%s\n' "$release_id" >> "$GITHUB_OUTPUT"
       - name: Gerar, assinar e verificar manifesto
@@ -92,12 +95,50 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ inputs.tag }}
+          RELEASE_ID: ${{ steps.draft.outputs.release_id }}
         shell: bash
         run: |
           set -euo pipefail
-          gh release upload "$TAG" release-assets/ciaac-platform.jar \
-            release-assets/ciaac-platform-update.properties \
-            release-assets/ciaac-platform-update.properties.sig
-          gh release edit "$TAG" --draft=false
-          gh api "repos/$GITHUB_REPOSITORY/releases/tags/$TAG" \
-            --jq 'select(.draft == false and .immutable == true) | .html_url'
+          upload_asset() {
+            local path="$1"
+            local media_type="$2"
+            local name
+            name=$(basename "$path")
+            gh api --method POST \
+              -H "Content-Type: $media_type" \
+              "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID/assets?name=$name" \
+              --input "$path" >/dev/null
+          }
+
+          upload_asset release-assets/ciaac-platform.jar application/java-archive
+          upload_asset release-assets/ciaac-platform-update.properties text/plain
+          upload_asset release-assets/ciaac-platform-update.properties.sig text/plain
+
+          prerelease=false
+          [[ "$TAG" == *-* ]] && prerelease=true
+          gh api "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID" | jq -e \
+            --arg tag "$TAG" --arg sha "$GITHUB_SHA" --argjson prerelease "$prerelease" '
+              .draft == true and
+              .tag_name == $tag and
+              .target_commitish == $sha and
+              .prerelease == $prerelease and
+              (.assets | length) == 3 and
+              ([.assets[].name] | sort) == ([
+                "ciaac-platform-update.properties",
+                "ciaac-platform-update.properties.sig",
+                "ciaac-platform.jar"
+              ] | sort) and
+              ([.assets[] | select(.state != "uploaded" or .size <= 0)] | length) == 0
+            ' >/dev/null
+
+          gh api --method PATCH "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID" \
+            -F draft=false >/dev/null
+          gh api "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID" | jq -er \
+            --arg tag "$TAG" '
+              select(
+                .draft == false and
+                .immutable == true and
+                .tag_name == $tag and
+                (.assets | length) == 3
+              ) | .html_url
+            '
