@@ -4,7 +4,7 @@ import java.time.Instant;
 import java.util.Objects;
 import java.util.UUID;
 
-/** Capability emitted only by a validated post-nLogin adapter. */
+/** Capability emitted only after validated authentication and provider state completion. */
 public record AuthenticatedSession(
         UUID capabilityId,
         UUID playerId,

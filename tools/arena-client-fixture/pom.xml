@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0">
+  <modelVersion>4.0.0</modelVersion>
+  <groupId>local.ciaac</groupId>
+  <artifactId>arena-acceptance-client</artifactId>
+  <version>0.0.0</version>
+  <!-- Test tooling only: not a dependency of CIAACPlatform. -->
+  <repositories>
+    <repository><id>opencollab</id><url>https://repo.opencollab.dev/main/</url></repository>
+  </repositories>
+  <dependencies>
+    <dependency>
+      <groupId>org.geysermc.mcprotocollib</groupId>
+      <artifactId>protocol</artifactId>
+      <version>26.2-20260907.143312-19</version>
+    </dependency>
+  </dependencies>
+</project>

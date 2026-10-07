@@ -36,9 +36,14 @@ public final class MinecraftAnnouncementPublisher implements AnnouncementPublish
 
     @Override
     public AnnouncementPublishResult publish(Announcement announcement) {
-        String command = JOIN_COMMANDS.get(announcement.game());
+        boolean arenaReadyCheck = announcement.game() == GameKey.ARENA
+                && announcement.kind() == com.ciaac.minecraft.minigames.announcement.AnnouncementKind.STARTING;
+        String text = arenaReadyCheck
+                ? "Partida do Coliseu reservada; os participantes têm de confirmar com /coliseu pronto."
+                : announcement.plainTextPtPt();
+        String command = arenaReadyCheck ? null : JOIN_COMMANDS.get(announcement.game());
         Component message = Component.text("[Minijogos] ", NamedTextColor.GOLD)
-                .append(Component.text(announcement.plainTextPtPt(), NamedTextColor.YELLOW));
+                .append(Component.text(text, NamedTextColor.YELLOW));
         if (command != null) {
             message = message.append(Component.space())
                     .append(Component.text("[Entrar]", NamedTextColor.AQUA)

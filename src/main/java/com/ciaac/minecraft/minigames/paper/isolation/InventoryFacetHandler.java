@@ -15,7 +15,8 @@ public final class InventoryFacetHandler implements FacetSnapshotHandler {
     private static final int VERSION = 1;
     private static final int STORAGE_SIZE = 36;
     private static final int ARMOR_SIZE = 4;
-    private static final int EXTRA_SIZE = 1;
+    // Paper 26.2 includes off-hand, body and saddle, even for a player.
+    private static final int EXTRA_SIZE = 3;
     private static final int ENDER_CHEST_SIZE = 27;
     private static final Set<PlayerStateFacet> FACETS = Set.of(
             PlayerStateFacet.INVENTORY,
@@ -45,7 +46,9 @@ public final class InventoryFacetHandler implements FacetSnapshotHandler {
                         new ItemStack[] { player.getItemOnCursor() }));
                 output.writeInt(inventory.getHeldItemSlot());
             }
-            return bytes.toByteArray();
+            byte[] payload = bytes.toByteArray();
+            decode(payload);
+            return payload;
         } catch (IOException exception) {
             throw new IllegalStateException("Could not encode player inventory", exception);
         }

@@ -1,6 +1,7 @@
 package com.ciaac.minecraft.minigames.updater;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
 import org.junit.jupiter.api.Test;
@@ -26,6 +27,17 @@ final class GitHubReleaseClientTest {
     }
 
     @Test
+    void emptyFeedAndStableFeedWithOnlyPrereleasesHaveNoEligibleRelease() {
+        assertThrows(GitHubReleaseClient.NoEligibleReleaseException.class,
+                () -> GitHubReleaseClient.selectLatestRelease("[]", false));
+
+        String prereleases = "[" + release(1, "v0.2.0-alpha.1", false, true, true)
+                + "," + release(2, "v0.1.0-beta.1", false, true, true) + "]";
+        assertThrows(GitHubReleaseClient.NoEligibleReleaseException.class,
+                () -> GitHubReleaseClient.selectLatestRelease(prereleases, false));
+    }
+
+    @Test
     void excludesDraftMutableMalformedAndInconsistentReleases() {
         String json = "[" + release(1, "v9.0.0", true, false, true)
                 + "," + release(2, "v8.0.0", false, false, false)
@@ -38,11 +50,12 @@ final class GitHubReleaseClientTest {
     }
 
     @Test
-    void rejectsAmbiguousSemanticVersionsAndOversizedLists() {
+    void invalidJsonAmbiguousVersionsAndOversizedListsRemainInvalidInput() {
+        assertInvalidReleaseInput("not-json");
+
         String duplicates = "[" + release(1, "v1.0.0", false, false, true)
                 + "," + release(2, "v1.0.0", false, false, true) + "]";
-        assertThrows(IllegalArgumentException.class,
-                () -> GitHubReleaseClient.selectLatestRelease(duplicates, false));
+        assertInvalidReleaseInput(duplicates);
 
         StringBuilder oversized = new StringBuilder("[");
         for (int index = 0; index < 101; index++) {
@@ -50,8 +63,13 @@ final class GitHubReleaseClientTest {
             oversized.append(release(index + 1L, "v1.0." + index, false, false, true));
         }
         oversized.append(']');
-        assertThrows(IllegalArgumentException.class,
-                () -> GitHubReleaseClient.selectLatestRelease(oversized.toString(), false));
+        assertInvalidReleaseInput(oversized.toString());
+    }
+
+    private static void assertInvalidReleaseInput(String json) {
+        IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
+                () -> GitHubReleaseClient.selectLatestRelease(json, false));
+        assertFalse(failure instanceof GitHubReleaseClient.NoEligibleReleaseException);
     }
 
     private static String release(long id, String tag, boolean draft,

@@ -94,7 +94,7 @@ public final class AnvilDodgeController {
         try {
             if (game.phase() == AnvilDodgePhase.DISABLED) game.open(nextOperation());
             teleport(player, settings.start());
-            if (!sessions.activate(session.sessionId(), OperationIds.derive(request.requestId(), "GAME_ACTIVE"), now)) {
+            if (!sessions.activate(session.sessionId(), OperationIds.derive(request.requestId(), "GAME_ACTIVE"), clock.instant())) {
                 throw new IllegalStateException("session activation replay did not apply");
             }
             game.join(player.getUniqueId(), nextOperation());

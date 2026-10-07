@@ -203,7 +203,9 @@ public final class PaperConfigurationResolver {
         module.regions().forEach((id, specification) -> {
             String path = root + ".regions." + id;
             try {
-                CuboidRegion region = specification.toRegion();
+                CuboidRegion region = specification.fullHeight()
+                        ? specification.toRegion(world.getMinHeight(), world.getMaxHeight())
+                        : specification.toRegion();
                 if (!world.getUID().equals(region.worldId())) {
                     diagnostics.add(new ResolutionDiagnostic("REGION_WORLD_MISMATCH", path,
                             "A região está associada a outro mundo que não o módulo."));
@@ -808,7 +810,7 @@ public final class PaperConfigurationResolver {
                 "kit-modes", "staked-survival", "fixed-kits", "protected-survival", "staked-survival.enabled",
                 "staked-survival.allowed-formats", "staked-survival.prohibited-materials", "staked-survival.consent-timeout-seconds",
                 "staked-survival.no-contest-policy"));
-        keys.put(GameKey.BUILD_BATTLE, Set.of("world-template-marker", "minimum-players", "maximum-players", "queue-seconds",
+        keys.put(GameKey.BUILD_BATTLE, Set.of("world-template-marker", "plots", "minimum-players", "maximum-players", "queue-seconds",
                 "theme-vote-seconds", "build-seconds", "plot-size", "plot-spacing", "theme-pool", "voting", "voting.seconds-per-plot",
                 "voting.minimum-score", "voting.maximum-score", "voting.completion-policy", "voting.tie-policy", "reset",
                 "reset.strategy", "reset.timeout-seconds"));

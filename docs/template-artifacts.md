@@ -1,6 +1,6 @@
 # Artefactos de templates nativos
 
-- Estado: `SOURCE-IMPLEMENTED` em 2026-08-22; `RUNTIME-UNVERIFIED`.
+- Estado: `SOURCE-VERIFIED` em 2026-08-22; `UNVERIFIED`.
 - Âmbito: artefactos só de leitura e revistos pelo operador, consumidos pelos
   adaptadores nativos de reset de Build Battle e de templates de Color Floor.
 - Autoridade: o artefacto é uma entrada do operador, não uma captura do mundo

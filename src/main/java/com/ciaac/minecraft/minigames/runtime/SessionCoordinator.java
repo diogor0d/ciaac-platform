@@ -13,6 +13,7 @@ import java.time.Instant;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.UUID;
+import java.util.function.Consumer;
 
 /**
  * Transactional orchestration boundary between authentication, durable state,
@@ -31,6 +32,7 @@ public final class SessionCoordinator {
     private final IsolationPolicy isolationPolicy;
     private final SnapshotEnvelopeCodec snapshotCodec;
     private final Clock clock;
+    private final Consumer<String> failureReporter;
 
     public SessionCoordinator(
             AuthenticationRegistry authentication,
@@ -41,6 +43,20 @@ public final class SessionCoordinator {
             IsolationPolicy isolationPolicy,
             SnapshotEnvelopeCodec snapshotCodec,
             Clock clock) {
+        this(authentication, sessions, sessionRepository, snapshots, stateGateway,
+                isolationPolicy, snapshotCodec, clock, ignored -> {});
+    }
+
+    public SessionCoordinator(
+            AuthenticationRegistry authentication,
+            SessionRegistry sessions,
+            SessionRepository sessionRepository,
+            SnapshotRepository snapshots,
+            PlayerStateGateway stateGateway,
+            IsolationPolicy isolationPolicy,
+            SnapshotEnvelopeCodec snapshotCodec,
+            Clock clock,
+            Consumer<String> failureReporter) {
         this.authentication = Objects.requireNonNull(authentication, "authentication");
         this.sessions = Objects.requireNonNull(sessions, "sessions");
         this.sessionRepository = Objects.requireNonNull(sessionRepository, "sessionRepository");
@@ -49,6 +65,7 @@ public final class SessionCoordinator {
         this.isolationPolicy = Objects.requireNonNull(isolationPolicy, "isolationPolicy");
         this.snapshotCodec = Objects.requireNonNull(snapshotCodec, "snapshotCodec");
         this.clock = Objects.requireNonNull(clock, "clock");
+        this.failureReporter = Objects.requireNonNull(failureReporter, "failureReporter");
     }
 
     public synchronized AdmissionResult prepare(AdmissionRequest request) {
@@ -62,7 +79,7 @@ public final class SessionCoordinator {
                     "AUTHENTICATION_REQUIRED",
                     "Conclui primeiro a autenticação da tua sessão antes de entrares num minijogo.");
         }
-        if (!stateGateway.supports(isolationPolicy)) {
+        if (!stateGateway.supports(request.game(), isolationPolicy)) {
             return AdmissionResult.rejected(
                     "ISOLATION_UNAVAILABLE",
                     "Este minijogo está fechado porque o isolamento da progressão ainda não está completo.");
@@ -95,8 +112,16 @@ public final class SessionCoordinator {
                     request.sessionId(),
                     request.matchId(),
                     request.playerId(),
+                    request.connectionId(),
                     request.game(),
                     now);
+            validateSnapshotIdentity(session, snapshot);
+            if (snapshot.schemaVersion() != 2 || !request.snapshotId().equals(snapshot.snapshotId())
+                    || !captureOperation.equals(snapshot.operationId())
+                    || !request.connectionId().equals(snapshot.capturedConnectionId())
+                    || !now.equals(snapshot.capturedAt())) {
+                throw new IllegalStateException("Captured snapshot does not match the admission request");
+            }
             byte[] envelope = snapshotCodec.encode(snapshot);
             SnapshotRecord snapshotRecord = new SnapshotRecord(snapshot, snapshotCodec.checksum(envelope));
             snapshots.create(snapshotRecord);
@@ -133,6 +158,7 @@ public final class SessionCoordinator {
                     "Estado protegido. A preparar o minijogo…",
                     Optional.of(session));
         } catch (RuntimeException failure) {
+            reportFailure(session, "PREPARATION_FAILED", failure);
             return failClosedAfterPreparationFailure(request, session, durableSnapshotExists, failure);
         }
     }
@@ -154,6 +180,7 @@ public final class SessionCoordinator {
             UUID rootOperationId,
             String reasonCode) {
         PlayerSession session = requireSession(sessionId);
+        rootOperationId = scopeOperationIdToSession(session, rootOperationId);
         try {
             if (session.phase() == SessionPhase.ACTIVE) {
                 transitionAndSave(
@@ -174,6 +201,7 @@ public final class SessionCoordinator {
                     "O teu estado survival foi restaurado.",
                     Optional.of(session));
         } catch (RuntimeException failure) {
+            reportFailure(session, "RESTORE_FAILED", failure);
             quarantine(session, rootOperationId, "RESTORE_FAILED");
             return new AdmissionResult(
                     AdmissionStatus.QUARANTINED,
@@ -185,6 +213,7 @@ public final class SessionCoordinator {
 
     public synchronized AdmissionResult recover(UUID sessionId, UUID rootOperationId, String reasonCode) {
         PlayerSession session = requireSession(sessionId);
+        rootOperationId = scopeOperationIdToSession(session, rootOperationId);
         try {
             if (session.snapshotId().isEmpty()
                     && (session.phase() == SessionPhase.REQUESTED
@@ -210,6 +239,7 @@ public final class SessionCoordinator {
                     "A recuperação da tua sessão terminou com segurança.",
                     Optional.of(session));
         } catch (RuntimeException failure) {
+            reportFailure(session, "RECOVERY_FAILED", failure);
             quarantine(session, rootOperationId, "RECOVERY_FAILED");
             return new AdmissionResult(
                     AdmissionStatus.QUARANTINED,
@@ -290,6 +320,7 @@ public final class SessionCoordinator {
                 .orElseThrow(() -> new IllegalStateException("Session has no durable snapshot"));
         SnapshotRecord snapshotRecord = snapshots.find(snapshotId)
                 .orElseThrow(() -> new IllegalStateException("Durable snapshot is missing"));
+        validateSnapshotIdentity(session, snapshotRecord.snapshot());
         SnapshotState state = snapshotRecord.state();
         if (state == SnapshotState.CAPTURED || state == SnapshotState.TEMPORARY_APPLIED) {
             snapshots.transition(
@@ -332,6 +363,46 @@ public final class SessionCoordinator {
                 clock.instant(),
                 "RESTORE_COMMITTED");
         sessions.releaseClosed(session.sessionId());
+    }
+
+    private static void validateSnapshotIdentity(PlayerSession session, PlayerStateSnapshot snapshot) {
+        if (!snapshot.sessionId().equals(session.sessionId())
+                || !snapshot.matchId().equals(session.matchId())
+                || !snapshot.playerId().equals(session.playerId())
+                || snapshot.game() != session.game()) {
+            throw new IllegalStateException("Snapshot does not belong to its session");
+        }
+    }
+
+    /**
+     * Caller roots may identify a match-wide event shared by several players.
+     * Scope them before deriving any child operation so provider journals see
+     * distinct operations for distinct durable sessions, while retries for the
+     * same session remain stable.
+     */
+    private static UUID scopeOperationIdToSession(PlayerSession session, UUID rootOperationId) {
+        return OperationIds.derive(
+                Objects.requireNonNull(rootOperationId, "rootOperationId"),
+                "SESSION_" + session.sessionId());
+    }
+
+    private void reportFailure(PlayerSession session, String code, RuntimeException failure) {
+        // Exception messages may contain provider state or credentials. Report only
+        // correlation, exception types and bounded source locations.
+        StringBuilder diagnostic = new StringBuilder("Falha de isolamento [")
+                .append(code).append("] sessão=").append(session.sessionId());
+        Throwable cause = failure;
+        for (int depth = 0; cause != null && depth < 4; depth++, cause = cause.getCause()) {
+            diagnostic.append("; tipo=").append(cause.getClass().getName());
+            StackTraceElement[] frames = cause.getStackTrace();
+            for (int i = 0; i < Math.min(frames.length, 4); i++) {
+                diagnostic.append("; origem=").append(frames[i].getClassName())
+                        .append('.').append(frames[i].getMethodName())
+                        .append(':').append(frames[i].getLineNumber());
+            }
+        }
+        try { failureReporter.accept(diagnostic.toString()); }
+        catch (RuntimeException ignored) { /* Diagnostics cannot interrupt safe closure. */ }
     }
 
     private void quarantine(PlayerSession session, UUID rootOperationId, String reasonCode) {

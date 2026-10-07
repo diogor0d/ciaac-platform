@@ -172,7 +172,7 @@ public final class GitHubReleaseClient {
         if (!(root instanceof List<?> values)) {
             throw new IllegalArgumentException("release JSON is not an array");
         }
-        if (values.isEmpty() || values.size() > 100) {
+        if (values.size() > 100) {
             throw new IllegalArgumentException("release list is outside its bound");
         }
         GitHubRelease selected = null;
@@ -203,8 +203,18 @@ public final class GitHubReleaseClient {
                 selectedVersion = version;
             }
         }
-        if (selected == null) throw new IllegalArgumentException("release list contains no eligible version");
+        if (selected == null) {
+            throw new NoEligibleReleaseException("release list contains no eligible version");
+        }
         return selected;
+    }
+
+    static final class NoEligibleReleaseException extends IllegalArgumentException {
+        private static final long serialVersionUID = 1L;
+
+        NoEligibleReleaseException(String message) {
+            super(message);
+        }
     }
 
     private static GitHubRelease parseReleaseMap(Map<?, ?> map) {

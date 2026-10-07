@@ -3,7 +3,7 @@
 enabled: false
 timezone: Europe/Lisbon
 season:
-  anchor: 2026-09-15
+  anchor: '2026-09-15'
   calendar-months: 3
   claim-grace-days: 14
 qualification:

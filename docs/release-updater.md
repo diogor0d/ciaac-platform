@@ -52,6 +52,11 @@ indevidos, downgrades, rascunhos e versões mutáveis são rejeitados. A descobe
 consulta no máximo 100 versões, rejeita paginação adicional e escolhe a maior
 SemVer elegível, independentemente da ordem da API.
 
+Uma lista válida sem versões elegíveis para o canal configurado, incluindo uma
+lista vazia ou um feed estável que contenha apenas pré-lançamentos, produz
+`NO_UPDATE` com diagnóstico de que não existe versão publicada elegível. JSON
+inválido, listas excessivas ou versões ambíguas continuam a produzir falha.
+
 O download é escrito primeiro para um ficheiro temporário `CREATE_NEW`. Depois
 da validação, o ficheiro é movido atomicamente para a pasta de atualização,
 usando o nome exato do JAR atualmente instalado. O atualizador nunca faz

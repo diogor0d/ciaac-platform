@@ -192,6 +192,9 @@ public final class UpdaterService implements AutoCloseable {
                     Optional.of(manifest.version()));
             if (configuration.restartEmptyServerAfterStaging()
                     && !scheduleRestartWhenEmpty()) return;
+        } catch (GitHubReleaseClient.NoEligibleReleaseException noEligibleRelease) {
+            setOutcome(Status.NO_UPDATE,
+                    "Não há uma versão publicada elegível para o canal configurado.", Optional.empty());
         } catch (InterruptedException interrupted) {
             Thread.currentThread().interrupt();
             setFailure("UPDATER_INTERRUPTED");

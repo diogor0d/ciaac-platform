@@ -128,7 +128,7 @@ public final class ElytraRingsController {
         try {
             if (game.phase() == ElytraRingsPhase.DISABLED) game.open(nextOperation());
             teleport(player, settings.start());
-            sessions.activate(session.sessionId(), OperationIds.derive(request.requestId(), "GAME_ACTIVE"), now);
+            sessions.activate(session.sessionId(), OperationIds.derive(request.requestId(), "GAME_ACTIVE"), clock.instant());
             grantTemporaryFlightKit(player, session.sessionId());
             rocketUses = 0;
             game.start(now, nextOperation()); startedAt = now;

@@ -35,7 +35,6 @@ public final class MinigameEventPoliciesFactory {
         Objects.requireNonNull(resolved, "resolved");
         Objects.requireNonNull(services, "services");
 
-        CuboidRegion coliseumFloor = region(resolved, GameKey.ARENA, "combat-floor").orElse(null);
         ResolvedParkourConfiguration parkour = configuration(
                 resolved, GameKey.CHECKPOINT_PARKOUR, ResolvedParkourConfiguration.class).orElse(null);
         ResolvedArcheryConfiguration archery = configuration(
@@ -45,7 +44,6 @@ public final class MinigameEventPoliciesFactory {
         ArcheryModule archeryModule = typed(modules, GameKey.ARCHERY_RANGE, ArcheryModule.class);
 
         return new MinigameEventRouter.Policies(
-                (player, destination) -> contains(coliseumFloor, destination),
                 (player, destination) -> parkour != null
                         && contains(parkour.regions().get("course-boundary"), destination),
                 (player, destination) -> containsArcheryLane(archeryModule, archery, player.getUniqueId(), destination),
@@ -160,12 +158,6 @@ public final class MinigameEventPoliciesFactory {
 
     private static boolean contains(CuboidRegion region, Location location) {
         return region != null && location != null && region.contains(location);
-    }
-
-    private static Optional<CuboidRegion> region(
-            ConfigurationResolutionResult resolved, GameKey game, String id) {
-        return resolved.module(game).flatMap(module -> module.gameConfiguration())
-                .map(ResolvedGameConfiguration::regions).map(regions -> regions.get(id));
     }
 
     private static <T extends ResolvedGameConfiguration> Optional<T> configuration(

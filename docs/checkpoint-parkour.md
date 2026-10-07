@@ -2,9 +2,9 @@
 
 Estado em 2026-08-24:
 
-- `SOURCE-IMPLEMENTED`: domínio, controlador Paper, tokens de região e
+- `SOURCE-VERIFIED`: domínio, controlador Paper, tokens de região e
   recuperação através de `SessionCoordinator` estão presentes.
-- `RUNTIME-UNVERIFIED`: não foi realizado teste Paper descartável nem
+- `UNVERIFIED`: não foi realizado teste Paper descartável nem
   validação de um percurso em funcionamento.
 
 ## Experiência e comandos
@@ -68,5 +68,5 @@ registada depois de a restauração ser confirmada.
 ## Limites de execução
 
 A ligação Paper dos listeners, a entrega de hologramas/DiscordSRV e a aceitação
-de um percurso real permanecem `RUNTIME-UNVERIFIED`. Nenhum display externo é
+de um percurso real permanecem `UNVERIFIED`. Nenhum display externo é
 a fonte de verdade para admissão ou resultados.

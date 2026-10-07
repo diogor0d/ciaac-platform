@@ -9,12 +9,15 @@ import java.util.UUID;
 public interface PlayerStateGateway {
     Set<PlayerStateFacet> supportedFacets();
 
+    default Set<PlayerStateFacet> supportedFacets(GameKey game) { return supportedFacets(); }
+
     PlayerStateSnapshot capture(
             UUID snapshotId,
             UUID operationId,
             UUID sessionId,
             UUID matchId,
             UUID playerId,
+            UUID connectionId,
             GameKey game,
             Instant capturedAt);
 
@@ -24,10 +27,14 @@ public interface PlayerStateGateway {
     /** Removes all game-owned temporary state before restoration. */
     void purgeTemporaryState(UUID operationId, PlayerStateSnapshot snapshot);
 
-    /** Restores every captured facet exactly once. */
+    /** Restores captured facets; each handler must make replay safe or reject ambiguity. */
     void restore(UUID operationId, PlayerStateSnapshot snapshot);
 
     default boolean supports(IsolationPolicy policy) {
         return supportedFacets().containsAll(policy.protectedFacets());
+    }
+
+    default boolean supports(GameKey game, IsolationPolicy policy) {
+        return supportedFacets(game).containsAll(policy.protectedFacets());
     }
 }

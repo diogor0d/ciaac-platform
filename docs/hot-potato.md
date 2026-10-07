@@ -2,9 +2,9 @@
 
 Estado em 2026-08-24:
 
-- `SOURCE-IMPLEMENTED`: domínio, controlador Paper, regras de passe e
+- `SOURCE-VERIFIED`: domínio, controlador Paper, regras de passe e
   recuperação de sessão estão presentes.
-- `RUNTIME-UNVERIFIED`: não existe validação Paper descartável nem execução
+- `UNVERIFIED`: não existe validação Paper descartável nem execução
   real da arena.
 
 ## Ciclo de vida
@@ -67,4 +67,4 @@ resultado só é registado depois de a restauração ser confirmada.
 ## Limites de execução
 
 A ligação de listeners Paper, a reposição real da arena, displays, DiscordSRV e
-a execução da regra do pavio continuam `RUNTIME-UNVERIFIED`.
+a execução da regra do pavio continuam `UNVERIFIED`.

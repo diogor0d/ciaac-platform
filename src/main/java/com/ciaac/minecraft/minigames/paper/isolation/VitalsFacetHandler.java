@@ -156,8 +156,9 @@ public final class VitalsFacetHandler implements FacetSnapshotHandler {
                     || !Double.isFinite(absorption) || absorption < 0
                     || food < 0 || food > 20
                     || !Float.isFinite(saturation) || saturation < 0 || saturation > food
-                    || !Float.isFinite(exhaustion) || exhaustion < 0 || exhaustion > 4
-                    || fireTicks < 0 || freezeTicks < 0 || air < 0) {
+                    || !Float.isFinite(exhaustion) || exhaustion < 0 || exhaustion > 40
+                    // Fire immunity and drowning use signed fire/air timers.
+                    || freezeTicks < 0) {
                 throw new IllegalArgumentException("Vitals snapshot values are invalid");
             }
             return new Decoded(experience, level, totalExperience, health, absorption, food,

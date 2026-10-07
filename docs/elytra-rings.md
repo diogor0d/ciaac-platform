@@ -2,11 +2,11 @@
 
 Estado em 2026-08-24 (endurecimento do código-fonte reconciliado):
 
-- `SOURCE-IMPLEMENTED`: `ElytraRingsGame`, `ElytraRingsController`, a fronteira
+- `SOURCE-VERIFIED`: `ElytraRingsGame`, `ElytraRingsController`, a fronteira
   de definições/preparação de chunks do mundo dedicado, a ligação do
   módulo/assembler fixo, as portas do encaminhador de eventos e o registo de
   resultados estão presentes.
-- `RUNTIME-UNVERIFIED`: não foi executado qualquer teste de aceitação de
+- `UNVERIFIED`: não foi executado qualquer teste de aceitação de
   chunks/tickets/voo em funcionamento, instalação ou teste Paper descartável.
   Os testes Maven completos e Paper descartável ficam adiados.
 

@@ -154,7 +154,9 @@ public final class PassportService {
     public PassportSnapshot passport(UUID playerId, Instant now) {
         Objects.requireNonNull(playerId, "playerId"); Objects.requireNonNull(now, "now");
         SeasonWindow season = calendar.seasonAt(now);
-        return repository.transaction(playerId, ledger -> snapshot(ledger, season));
+        return repository.findLedger(playerId)
+                .map(ledger -> snapshot(ledger, season))
+                .orElseGet(() -> snapshot(new PlayerRetentionLedger(playerId), season));
     }
 
     public String personalize(UUID playerId, String kind, String rewardId, Instant now) {
@@ -249,7 +251,7 @@ public final class PassportService {
         LocalDate date = calendar.localDate(now);
         SeasonWindow current = calendar.seasonContaining(date);
         SeasonWindow previous = calendar.seasonContaining(current.startsOn().minusDays(1));
-        return repository.transaction(playerId, ledger -> {
+        return repository.findLedger(playerId).map(ledger -> {
             Entitlement currentReward = ledger.entitlement(current.id(), rewardId);
             if (currentReward != null && currentReward.state() == EntitlementState.EARNED
                     && current.stateOn(date) != SeasonWindow.SeasonState.FUTURE) return current;
@@ -257,7 +259,7 @@ public final class PassportService {
             if (oldReward != null && oldReward.state() == EntitlementState.EARNED
                     && previous.stateOn(date) == SeasonWindow.SeasonState.CLAIM_GRACE) return previous;
             return current;
-        });
+        }).orElse(current);
     }
 
     private DeliveryResult deliver(UUID playerId, SeasonWindow season, RewardDescriptor reward, UUID operationId) {

@@ -10,6 +10,7 @@ import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.time.Instant;
+import java.time.DateTimeException;
 import java.util.EnumMap;
 import java.util.HexFormat;
 import java.util.Map;
@@ -32,8 +33,16 @@ public final class SnapshotEnvelopeCodec {
                 writeUuid(output, snapshot.sessionId());
                 writeUuid(output, snapshot.matchId());
                 writeUuid(output, snapshot.playerId());
+                if (snapshot.schemaVersion() == 2) {
+                    writeUuid(output, snapshot.capturedConnectionId());
+                }
                 writeString(output, snapshot.game().id());
-                output.writeLong(snapshot.capturedAt().toEpochMilli());
+                if (snapshot.schemaVersion() == 1) {
+                    output.writeLong(snapshot.capturedAt().toEpochMilli());
+                } else {
+                    output.writeLong(snapshot.capturedAt().getEpochSecond());
+                    output.writeInt(snapshot.capturedAt().getNano());
+                }
                 Map<PlayerStateFacet, byte[]> facets = snapshot.facets();
                 output.writeInt(facets.size());
                 for (PlayerStateFacet facet : PlayerStateFacet.values()) {
@@ -67,14 +76,28 @@ public final class SnapshotEnvelopeCodec {
                 throw new IllegalArgumentException("Snapshot envelope magic does not match");
             }
             int schema = input.readInt();
+            if (schema < 1 || schema > 2) {
+                throw new IllegalArgumentException("Unsupported snapshot schema");
+            }
             UUID snapshotId = readUuid(input);
             UUID operationId = readUuid(input);
             UUID sessionId = readUuid(input);
             UUID matchId = readUuid(input);
             UUID playerId = readUuid(input);
+            UUID capturedConnectionId = schema == 2 ? readUuid(input) : null;
             GameKey game = GameKey.fromId(readString(input))
                     .orElseThrow(() -> new IllegalArgumentException("Unknown snapshot game"));
-            Instant capturedAt = Instant.ofEpochMilli(input.readLong());
+            Instant capturedAt;
+            if (schema == 1) {
+                capturedAt = Instant.ofEpochMilli(input.readLong());
+            } else {
+                long epochSecond = input.readLong();
+                int nano = input.readInt();
+                if (nano < 0 || nano > 999_999_999) {
+                    throw new IllegalArgumentException("Snapshot nanosecond adjustment is invalid");
+                }
+                capturedAt = Instant.ofEpochSecond(epochSecond, nano);
+            }
             int count = input.readInt();
             if (count < 0 || count > PlayerStateFacet.values().length) {
                 throw new IllegalArgumentException("Snapshot facet count is invalid");
@@ -97,8 +120,9 @@ public final class SnapshotEnvelopeCodec {
                 throw new IllegalArgumentException("Snapshot envelope contains trailing data");
             }
             return new PlayerStateSnapshot(
-                    schema, snapshotId, operationId, sessionId, matchId, playerId, game, capturedAt, facets);
-        } catch (IOException | IllegalArgumentException exception) {
+                    schema, snapshotId, operationId, sessionId, matchId, playerId, capturedConnectionId,
+                    game, capturedAt, facets);
+        } catch (IOException | IllegalArgumentException | DateTimeException exception) {
             throw new IllegalArgumentException("Invalid snapshot envelope", exception);
         }
     }

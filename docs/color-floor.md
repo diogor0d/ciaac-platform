@@ -2,9 +2,9 @@
 
 Estado em 2026-08-24:
 
-- `SOURCE-IMPLEMENTED`: domínio, controlador, resolução do modelo e fronteira
+- `SOURCE-VERIFIED`: domínio, controlador, resolução do modelo e fronteira
   de sessão estão presentes.
-- `RUNTIME-UNVERIFIED`: não foi feita validação Paper nem restauração de
+- `UNVERIFIED`: não foi feita validação Paper nem restauração de
   blocos num servidor descartável.
 
 ## Experiência e comandos
@@ -70,5 +70,5 @@ preset público é `survival_ms`, MAX; valores maiores são melhores.
 ## Limites de execução
 
 A entrega de displays/hologramas, DiscordSRV, listeners Paper e uma restauração
-de blocos em execução continuam `RUNTIME-UNVERIFIED`. A classificação e o
+de blocos em execução continuam `UNVERIFIED`. A classificação e o
 estado do jogo não dependem de displays externos.

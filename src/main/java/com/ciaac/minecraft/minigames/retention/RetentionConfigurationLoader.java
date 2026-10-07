@@ -2,7 +2,11 @@ package com.ciaac.minecraft.minigames.retention;
 
 import java.io.File;
 import java.time.Duration;
+import java.time.Instant;
+import java.time.LocalDate;
+import java.time.ZoneOffset;
 import java.util.ArrayList;
+import java.util.Date;
 import java.util.List;
 import org.bukkit.configuration.file.YamlConfiguration;
 
@@ -11,7 +15,8 @@ public final class RetentionConfigurationLoader {
     public RetentionConfiguration load(File file) {
         YamlConfiguration yaml = YamlConfiguration.loadConfiguration(file);
         require(yaml.getString("timezone", "").equals("Europe/Lisbon"), "O fuso horário tem de ser Europe/Lisbon.");
-        require(yaml.getString("season.anchor", "").equals("2026-09-15"), "A primeira época tem de começar em 2026-09-15.");
+        require(isApprovedSeasonAnchor(yaml.get("season.anchor")),
+                "A primeira época tem de começar em 2026-09-15.");
         require(yaml.getInt("season.calendar-months") == 3, "As épocas têm de durar três meses de calendário.");
         require(yaml.getInt("season.claim-grace-days") == 14, "O período de reclamação tem de durar 14 dias.");
         require(yaml.getInt("qualification.authenticated-join-minutes") == 10,
@@ -48,6 +53,16 @@ public final class RetentionConfigurationLoader {
                 "pontos-" + value, "Emblema do Passaporte " + value,
                 RewardDescriptor.RewardMetric.PASSPORT_POINTS, value));
         return List.copyOf(rewards);
+    }
+
+    private static boolean isApprovedSeasonAnchor(Object value) {
+        LocalDate approved = LisbonSeasonCalendar.ANCHOR;
+        if (value instanceof String text) return text.equals(approved.toString());
+        if (value instanceof Date date) {
+            Instant expected = approved.atStartOfDay(ZoneOffset.UTC).toInstant();
+            return date.getTime() == expected.toEpochMilli();
+        }
+        return false;
     }
 
     private static List<Integer> integers(YamlConfiguration yaml, String path) {

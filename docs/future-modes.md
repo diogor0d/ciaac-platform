@@ -2,11 +2,11 @@
 
 Estado em 2026-08-22:
 
-- `SOURCE-IMPLEMENTED`: os seis modos abaixo têm domínio puro, configuração
+- `SOURCE-VERIFIED`: os seis modos abaixo têm domínio puro, configuração
   validada, controlador/módulo Paper, isolamento de sessões, encaminhamento de
   eventos e código-fonte de estatísticas neste checkout. `ModuleCatalog`
   classifica-os como implementados no código-fonte.
-- `RUNTIME-UNVERIFIED`: a presença do código-fonte não abre a admissão. Não há
+- `UNVERIFIED`: a presença do código-fonte não abre a admissão. Não há
   implantação, evidência de aceitação Paper em execução nem teste Paper
   descartável neste registo. Os testes Maven completos e Paper descartável ficam
   adiados.
@@ -82,7 +82,7 @@ ciaac-archery-target:<configured-target-id>:<score-band>
 O ID tem de corresponder a `lanes.<id>.target-id`, a banda tem de existir em
 `target-scores.*`, e a entidade tem de estar na região dessa pista. A política de
 eventos regista o alvo e o controlador valida a sua pontuação no servidor. A
-ponte ativa entre tag do scoreboard e entidade permanece `RUNTIME-UNVERIFIED`.
+ponte ativa entre tag do scoreboard e entidade permanece `UNVERIFIED`.
 Consulte
 [`archery-range.md`](archery-range.md).
 
@@ -122,7 +122,7 @@ antes de drops/experiência, rejeita pérolas do Ender e alterações diretas do
 terreno, e aceita apenas foguetes identificados e contabilizados pelo servidor.
 A implementação atual rejeita a configuração quando `concurrent-runners` não é
 um; a física de voo e das entidades em execução permanece
-`RUNTIME-UNVERIFIED`. Consulta [`elytra-rings.md`](elytra-rings.md).
+`UNVERIFIED`. Consulta [`elytra-rings.md`](elytra-rings.md).
 
 ## Resultados, classificações e ecrãs partilhados
 

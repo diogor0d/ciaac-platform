@@ -48,6 +48,44 @@ class CiaacPlatformCommandTest {
         assertEquals(64.1, control.lastSpeed);
     }
 
+    @Test void minecartAdministrativeRoutesDenyBeforeControlAccessAndUseExactPermissions() {
+        FakeControl control = new FakeControl();
+        CiaacPlatformCommand command = new CiaacPlatformCommand(control, (a, s, r) -> {});
+        CommandSender deniedOperator = senderWithPermissions(Set.of(), true);
+
+        command.onCommand(deniedOperator, null, "ciaac", new String[]{"carrinhos", "recarregar"});
+        command.onCommand(deniedOperator, null, "ciaac", new String[]{"carrinhos", "definir", "24", "spawn"});
+        command.onCommand(deniedOperator, null, "ciaac", new String[]{"carrinhos", "predefinir", "24"});
+        command.onCommand(deniedOperator, null, "ciaac", new String[]{"carrinhos", "repor", "spawn"});
+        command.onCommand(deniedOperator, null, "ciaac", new String[]{"carrinhos", "repor-tudo"});
+
+        assertEquals(0, control.reloadCalls);
+        assertEquals(0, control.defaultCalls);
+        assertEquals(0, control.worldSetCalls);
+        assertEquals(0, control.worldClearCalls);
+        assertEquals(0, control.loadedWorldLookups);
+        assertFalse(control.clearedAll);
+
+        CommandSender reloadOnly = senderWithPermissions(Set.of("ciaac.minecarts.reload"), false);
+        command.onCommand(reloadOnly, null, "ciaac", new String[]{"carrinhos", "recarregar"});
+        command.onCommand(reloadOnly, null, "ciaac", new String[]{"carrinhos", "predefinir", "24"});
+        assertEquals(1, control.reloadCalls);
+        assertEquals(0, control.defaultCalls);
+
+        CommandSender testOnly = senderWithPermissions(Set.of("ciaac.minecarts.test"), false);
+        command.onCommand(testOnly, null, "ciaac", new String[]{"carrinhos", "recarregar"});
+        command.onCommand(testOnly, null, "ciaac", new String[]{"carrinhos", "definir", "24", "spawn"});
+        command.onCommand(testOnly, null, "ciaac", new String[]{"carrinhos", "predefinir", "24"});
+        command.onCommand(testOnly, null, "ciaac", new String[]{"carrinhos", "repor", "spawn"});
+        command.onCommand(testOnly, null, "ciaac", new String[]{"carrinhos", "repor-tudo"});
+        assertEquals(1, control.reloadCalls);
+        assertEquals(1, control.defaultCalls);
+        assertEquals(1, control.worldSetCalls);
+        assertEquals(1, control.worldClearCalls);
+        assertEquals(2, control.loadedWorldLookups);
+        assertTrue(control.clearedAll);
+    }
+
     @Test void tabCompletionFiltersTestPermissions() {
         FakeControl control = new FakeControl();
         CiaacPlatformCommand command = new CiaacPlatformCommand(control, (a, s, r) -> {});
@@ -103,13 +141,22 @@ class CiaacPlatformCommandTest {
             return value(m.getReturnType());
         });
     }
+    private static CommandSender senderWithPermissions(Set<String> permissions, boolean op) {
+        return (CommandSender) Proxy.newProxyInstance(CiaacPlatformCommandTest.class.getClassLoader(),
+                new Class[]{CommandSender.class}, (p,m,a) -> {
+                    if (m.getName().equals("hasPermission")) return permissions.contains(a[0]);
+                    if (m.getName().equals("isOp")) return op;
+                    return value(m.getReturnType());
+                });
+    }
     private static Object value(Class<?> t) { return t == boolean.class ? false : t.isPrimitive() ? 0 : null; }
 
     private static final class FakeControl implements MinecartSpeedControl {
         WorldIdentity lastWorld; boolean clearedAll; int defaultCalls; int worldSetCalls; int worldClearCalls;
+        int reloadCalls; int loadedWorldLookups;
         double lastSpeed;
-        public String statusPtPt(){return "estado";} public ReloadResult reload(){return ReloadResult.success("ok");}
-        public Optional<WorldIdentity> loadedWorldExact(String n){return Optional.of(new WorldIdentity(n, ID));}
+        public String statusPtPt(){return "estado";} public ReloadResult reload(){reloadCalls++; return ReloadResult.success("ok");}
+        public Optional<WorldIdentity> loadedWorldExact(String n){loadedWorldLookups++; return Optional.of(new WorldIdentity(n, ID));}
         public List<String> loadedWorldNames(){return List.of("spawn", "survival");}
         public ChangeResult setWorldOverride(WorldIdentity w,double s){lastWorld=w; worldSetCalls++; return changed();}
         public ChangeResult setDefaultOverride(double s){defaultCalls++; lastSpeed=s; return s > 64 ? new ChangeResult(false,false,UUID.randomUUID(),"inválida",List.of()) : changed();}

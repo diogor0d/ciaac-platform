@@ -1,16 +1,51 @@
 # Conceção da arena do Coliseu
 
-- Estado: subsistema de domínio `SOURCE-VERIFIED`; o adaptador e a execução Paper permanecem fechados
-- Documentado: 2026-08-24 (`Europe/Lisbon`); reforço do código reconciliado
-- Execução/implantação: `UNVERIFIED`; não existe configuração ou código da arena implantado
+- Estado: domínio e adaptador Paper `SOURCE-VERIFIED`; módulo desativado por omissão
+- Atualizado: 2026-10-06 (`Europe/Lisbon`); Arena ativada no backend CIAAC com AuthMe.
+- Produção: login normal e entrada/saída da fila `RUNTIME-VERIFIED`; partida com
+  dois jogadores no alvo ainda `UNVERIFIED`. Os ensaios locais abaixo têm o seu
+  próprio artefacto e âmbito; não equivalem a aceitação integral em produção.
+
+No Paper local 26.2 build 84, o JAR
+`463af6b312bbf4ecc981629ff2644680ed58e09f1ebdb7c4b7bf2350a675da7c` passou
+ensaios nativos delimitados de 2v2, 3v3, fogo amigo, portal do Nether e formatos
+2v3/3v2. O artefacto experimental posterior
+`18191810391d7685035f51406fa82e26cfa66ff950b6409757b1a981abd50a24` continua a
+falhar a recuperação após crash com seis participantes: um jogador regressou em
+`ADVENTURE` apesar da baseline `SURVIVAL`. A suite dessa build tinha 403 testes (402
+aprovados, um ignorado), mas esse resultado não fecha a aceitação nativa de
+crash. Os detalhes e os limites estão na
+[verificação funcional](functional-verification.md). Ensaios locais anteriores
+no JAR `0099b09ed6258f0c278a072d8a6f6d7a3980b6f29266f0d3591612a746263f7a`
+verificaram duelo fixo 1v1, desligação normal e recuperação após crash com
+equipamento espelhado. A recuperação experimental após crash com seis
+participantes falhou para um jogador real, que regressou em `ADVENTURE` em vez
+de `SURVIVAL`; não é aceite. Os testes de portal e formatos assimétricos acima
+pertencem ao JAR anterior e só valem para os casos documentados. Estes casos não
+provam aceitação completa. A integração nLogin atual continua fechada por falta
+de prova de conclusão. Em 2026-10-05, o adaptador opcional AuthMe passou login
+normal, partida 2v3, saída normal e crash com cinco peers no JAR
+`9fd508fef8d5fcd0c3f0c52f8e7b5fbe43d4a4e3bb7377add6f17fd20e4d2805`; os 13
+campos coincidiram exatamente. Aceitação adicional no mesmo JAR verificou hits
+de fogo amigo cancelados, dano inimigo, eliminação/espectador, 1v1, 2v2,
+portal físico e recuperação de crash protegido 3v3 com seis participantes.
+Persistem as limitações e pendências descritas no [contrato de autenticação](authentication.md)
+e na [verificação funcional](functional-verification.md); isto não constitui
+aceitação integral. A migração e ativação autorizadas de produção ocorreram
+em 2026-10-06; ver o [registo de ativação](arena-activation.md). A configuração
+por omissão mantém a Arena fechada; apenas o overlay revisto do alvo está ativo.
+O fornecedor nativo de
+estado do mundo suporta apenas a Arena; os outros oito minijogos permanecem
+fechados sem os respetivos fornecedores de isolamento.
 
 O código da arena gere a composição das filas, propostas imutáveis de partidas, o
 ciclo de vida de lugar único, admissão no piso vinculada a UUID, decisões de
 desligação/desistência, contratos de modo de equipamento e liquidação/reembolso
 exatamente uma vez do depósito. `ArenaQueue` nunca divide um grupo nem mistura
 filas de formato/equipamento. `ArenaLocationPolicy` e `ArenaEquipmentContract`
-são contratos nomeados para futuros adaptadores, não integrações ativas de
-WorldGuard, teletransporte, inventário ou persistência.
+são contratos de domínio consumidos pelo adaptador Paper. O runtime liga o
+controlador, os listeners de região e o fornecedor nativo de estado do mundo;
+não existe integração implementada com WorldGuard.
 
 ## Limites do adaptador Paper
 
@@ -29,8 +64,8 @@ de regiões: os combatentes ativos só podem permanecer na região de piso de
 combate admitida, enquanto os participantes eliminados são movidos para as
 bancadas públicas de espectadores e ficam confinados nelas. Uma tentativa de
 fuga torna-se uma desistência controlada. O listener genérico de região imutável
-continua a fornecer verificações de admissão e defesa em profundidade contra
-blocos, fluidos, pistões e explosões.
+fornece verificações de admissão e defesa em profundidade contra blocos, fluidos,
+pistões e explosões.
 
 O listener de espectadores aplica-se apenas a participantes numa partida ativa;
 os jogadores públicos não são admitidos no piso de combate nem tratados como
@@ -38,8 +73,9 @@ espectadores da partida. A política genérica de transporte rejeita destinos
 desconhecidos ou não autorizados, enquanto o movimento de veículos de um
 passageiro da Arena admitido só é permitido quando permanece na região de piso
 atual desse passageiro; os veículos recusados regressam à origem quando possível
-ou têm os passageiros expulsos. A ordem destes listeners e o comportamento real
-no Paper permanecem `RUNTIME-UNVERIFIED`.
+ou têm os passageiros expulsos. O runtime regista estes listeners; os ensaios
+locais citados acima não cobrem todos os caminhos de espectadores, veículos ou
+eventos, que permanecem `UNVERIFIED`.
 
 Os kits fixos são fornecidos por um `ArenaKitProvider` revisto e recebem a
 etiqueta de item temporário existente. O modo protegido usa uma cópia separada,
@@ -53,7 +89,7 @@ de sobrevivência não é editada e repõe-os. Nenhum item é largado no mundo.
 como a barreira persistente de recuperação do depósito estão prontas. O código inclui uma
 `StakedEscrowPort`, reconciliação no arranque dos depósitos abertos, consentimento novo sobre
 ambos os manifestos imutáveis, levantamento antes da admissão e reembolso exatamente uma vez
-ou liquidação para o vencedor, indexados pelo ID do depósito, ID da partida/resultado e identidade de repetição da operação. Uma recuperação ambígua fecha novas apostas para revisão. Isto está `SOURCE-IMPLEMENTED` e permanece `RUNTIME-UNVERIFIED`; os drops de morte normais nunca são um mecanismo de depósito.
+ou liquidação para o vencedor, indexados pelo ID do depósito, ID da partida/resultado e identidade de repetição da operação. Uma recuperação ambígua fecha novas apostas para revisão. Isto está `SOURCE-VERIFIED` e permanece `UNVERIFIED`; os drops de morte normais nunca são um mecanismo de depósito.
 
 O adaptador exige o ID de ligação de autenticação validado separadamente,
 geometria configurada da zona segura do spawn, registos de regiões não sobrepostas
@@ -85,6 +121,15 @@ temporizadores, empates, definições de kits e política de classificação con
 a ser decisões de configuração.
 
 ## Ciclo de vida
+
+### Regiões com altura total
+
+Uma região pode declarar `full-height: true` para abranger todo o intervalo vertical
+do mundo carregado. Os vetores `min` e `max` continuam a exigir três coordenadas
+inteiras válidas; os valores Y são validados, mas substituídos na resolução por
+`World.getMinHeight()` e `World.getMaxHeight() - 1`, respetivamente. O limite
+superior do Paper é exclusivo, enquanto o cuboide da plataforma inclui ambos os
+extremos. Sem `full-height`, as regiões mantêm os limites Y configurados.
 
 ```text
 IDLE (arena slot free)
@@ -178,9 +223,10 @@ A admissão exige o UUID autenticado, o ID da partida atual e o token de piso at
 
 A fronteira do código falha de forma segura: a geometria `__SET_ME__` não
 resolvida e os identificadores de kit/equipamento em falta são rejeitados pelos
-contratos correspondentes. Um adaptador Paper tem ainda de impor estas decisões
-nos eventos de movimento, interação, inventário, dano, teletransporte, mundo e
-entidades.
+contratos correspondentes. O adaptador Paper impõe estas decisões nos eventos
+de movimento, interação, inventário, dano, teletransporte, mundo e entidades;
+os casos abrangidos e as lacunas de aceitação estão registados na verificação
+funcional.
 
 A arena é imutável. Os testes têm de cobrir destruição/colocação de blocos, baldes, pistões,
 fluids, explosions, redstone, containers, item frames, entities, vehicles,
@@ -196,9 +242,9 @@ tentativa é negada ou resulta na desistência configurada, seguida de restaura�
 liquidação controlada.
 
 As desligacões antes da admissão entram em recuperação; uma desligação durante
-o combate é registada como desistência idempotente `DISCONNECT`. Isto é apenas
-uma decisão do domínio até serem fornecidos um listener de execução e um diário
-persistentemente gravado.
+o combate é registada como desistência idempotente `DISCONNECT`. O listener e o
+diário persistente estão ligados no runtime; o caso local de desligação normal
+foi verificado, sem provar todos os cenários de reconexão ou crash.
 
 ## Efeitos na sobrevivência e progressão
 
@@ -259,3 +305,51 @@ texto controlado por jogadores.
   das apostas.
 - Detalhes de compatibilidade de WorldGuard, nLogin, GrimAC, plugin de
   teletransporte, ecrãs e DiscordSRV.
+
+## Configuração do Coliseu existente — 2026-10-04
+
+O [overlay preparado](examples/colosseum-arena.yml) substitui apenas
+`modules.arena`. Foi aplicado ao alvo em **2026-10-06**, após a migração
+autorizada para AuthMe e validação do login normal. Não substituir a
+configuração completa: o Anvil Dodge e os outros serviços têm configuração
+própria que deve ser preservada.
+
+A inspeção do cliente e `/mv info` confirmaram o mundo `world`, UUID
+`620f870d-9c24-4573-bb95-db1dde2e4b41`, com altura de construção `-64..319`.
+As colunas de blocos carregadas mostraram areia em Y=86 e espaço livre para os
+spawns em Y=87. Os pontos de equipa são `(-397.5, 87, 6447.5)` e
+`(-341.5, 87, 6447.5)`, orientados um para o outro. O limite pedido é inclusivo
+em blocos: X=`-418..-321`, Z=`6425..6470`, com `full-height: true`.
+
+A faixa de espectadores proposta fica a sul, fora desse retângulo:
+X=`-380..-360`, Z=`6471..6478`, Y=`92..110`. A recuperação fica em
+`(-369.5, 98, 6473.5)`, sobre uma laje com espaço livre acima. A configuração
+não cria nem altera blocos. Uma região de combate de altura total impede também
+que o público use bancadas que estejam dentro do retângulo horizontal pedido;
+a faixa exterior evita essa sobreposição.
+
+O kit fixo entrega a espada no inventário, equipa automaticamente a armadura
+de ferro e coloca o escudo na mão secundária. A cópia survival protegida também está disponível. Apostas
+ficam desativadas nesta preparação. `reconnect-grace-seconds: 0` reflete o
+comportamento atual: uma desconexão ativa termina a participação imediatamente.
+Ensaios locais posteriores verificaram um duelo fixo 1v1, restauração após
+desligação e recuperação autenticada após crash com estado espelhado. Não provam
+aceitação de espectadores, restantes modos, apostas ou integração completa.
+
+O [procedimento de ativação](arena-activation.md) delimita a inspeção em leitura,
+o pacote para autorização, a interrupção, a aceitação e o rollback.
+Antes de ativar: escolher o fornecedor de autenticação suportado e rever a
+migração de contas se AuthMe for escolhido; guardar o JAR e a configuração atuais,
+validar num Paper descartável com esse fornecedor e as mesmas integrações,
+aplicar apenas o overlay e reiniciar de forma controlada (sem `/reload`). Validar
+admissão, combate,
+fronteiras e restauração; para rollback, parar, repor o JAR/configuração guardados
+e reiniciar. Não apagar nem substituir SQLite ou o diário de recuperação.
+
+
+A continuação de 2026-10-05 confirmou o kit sem arco no cliente real, combate,
+recusa de largar itens e restauro após saída, além de 3v2 e da barreira exterior
+por movimento e teleportes para Y=-40/Y=200 no mesmo JAR atual. Ver os resultados
+e limites exatos na [verificação funcional](functional-verification.md).
+O pacote está preparado localmente para revisão de migração/ativação no alvo;
+não foi instalado nem aceite em produção.

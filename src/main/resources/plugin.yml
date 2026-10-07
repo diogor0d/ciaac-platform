@@ -6,7 +6,10 @@ author: CIAAC
 api-version: '26.2'
 load: POSTWORLD
 softdepend:
+  - Essentials
+  - SimpleClaimSystem
   - nLogin
+  - AuthMe
   - DiscordSRV
   - Multiverse-Core
   - Multiverse-Inventories

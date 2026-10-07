@@ -385,7 +385,7 @@ public final class BuildBattlePaperController {
                     session.sessionId(), queued.player().getUniqueId(), plot.regionId(), now, expires));
             teleport(queued.player(), plot.spawn());
             queued.player().getInventory().setItemInMainHand(items.tag(new ItemStack(Material.BRICKS), session.sessionId(), GameKey.BUILD_BATTLE));
-            sessions.activate(session.sessionId(), OperationIds.derive(queued.request().requestId(), "GAME_ACTIVE"), now);
+            sessions.activate(session.sessionId(), OperationIds.derive(queued.request().requestId(), "GAME_ACTIVE"), clock.instant());
             participants.put(queued.player().getUniqueId(), new Participant(queued.request(), queued.player(), session.sessionId(), assignment.plot()));
         }
         phaseDeadline = now.plus(settings.buildDuration());

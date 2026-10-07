@@ -10,6 +10,9 @@ import com.ciaac.minecraft.minigames.runtime.SessionViolation;
 import com.ciaac.minecraft.minigames.runtime.SessionViolationHandler;
 import java.util.Locale;
 import java.util.Objects;
+import org.bukkit.command.PluginCommand;
+import org.bukkit.command.PluginIdentifiableCommand;
+import org.bukkit.plugin.Plugin;
 import java.util.Optional;
 import java.util.UUID;
 import org.bukkit.entity.Entity;
@@ -44,6 +47,7 @@ import org.bukkit.event.vehicle.VehicleEnterEvent;
 
 /** Blocks the common item, command, damage, and external-state laundering paths. */
 public final class SessionIsolationListener implements Listener {
+    private final Plugin owner;
     private final SessionRegistry sessions;
     private final AuthenticationRegistry authentication;
     private final CombatPolicyRegistry combatPolicies;
@@ -51,11 +55,13 @@ public final class SessionIsolationListener implements Listener {
     private final SessionViolationHandler violations;
 
     public SessionIsolationListener(
+            Plugin owner,
             SessionRegistry sessions,
             AuthenticationRegistry authentication,
             CombatPolicyRegistry combatPolicies,
             TemporaryItemTagger temporaryItems,
             SessionViolationHandler violations) {
+        this.owner = Objects.requireNonNull(owner, "owner");
         this.sessions = Objects.requireNonNull(sessions, "sessions");
         this.authentication = Objects.requireNonNull(authentication, "authentication");
         this.combatPolicies = Objects.requireNonNull(combatPolicies, "combatPolicies");
@@ -253,7 +259,9 @@ public final class SessionIsolationListener implements Listener {
 
     @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = false)
     public void onCommand(PlayerCommandPreprocessEvent event) {
-        if (isolated(event.getPlayer()).isPresent() && !allowedSessionCommand(event.getMessage())) {
+        if (isolated(event.getPlayer()).isPresent() && !allowedSessionCommand(event.getMessage(), owner)
+                && !(authentication.current(event.getPlayer().getUniqueId(), java.time.Instant.now()).isEmpty()
+                        && providerLoginCommand(event.getMessage(), owner))) {
             event.setCancelled(true);
             event.getPlayer().sendRichMessage(
                     "<red>Esse comando não está disponível durante um minijogo.</red>");
@@ -305,9 +313,14 @@ public final class SessionIsolationListener implements Listener {
         return Optional.empty();
     }
 
-    private static boolean allowedSessionCommand(String raw) {
+    static boolean allowedSessionCommand(String raw, Plugin owner) {
         String command = raw.startsWith("/") ? raw.substring(1) : raw;
         command = command.trim().toLowerCase(Locale.ROOT).replaceAll("\\s+", " ");
+        int space = command.indexOf(' ');
+        String label = space < 0 ? command : command.substring(0, space);
+        PluginCommand resolved = owner.getServer().getPluginCommand(label);
+        if (resolved == null || resolved.getPlugin() != owner) return false;
+        command = resolved.getName().toLowerCase(Locale.ROOT) + (space < 0 ? "" : command.substring(space));
         if (command.equals("minijogos") || command.equals("minigames")
                 || command.equals("minijogos estado") || command.equals("minigames estado")
                 || command.equals("minijogos ajuda") || command.equals("minigames ajuda")) {
@@ -318,5 +331,23 @@ public final class SessionIsolationListener implements Listener {
             return true;
         }
         return command.matches("(coliseu|arena|buildbattle|bb|batataquente|hotpotato|sumo|parkour|arco|bigornas|cores|elytra) (estado|ajuda|sair)");
+    }
+
+    /** Recovery cannot finish unless the actual provider can process normal login. */
+    static boolean providerLoginCommand(String raw, Plugin owner) {
+        String text = raw.startsWith("/") ? raw.substring(1) : raw;
+        String label = text.trim().split("\\s+", 2)[0].toLowerCase(Locale.ROOT);
+        // Paper's Brigadier registrations are not PluginCommand instances.
+        var command = owner.getServer().getCommandMap().getCommand(label);
+        if (!(command instanceof PluginIdentifiableCommand identified)) return false;
+        Plugin provider = identified.getPlugin();
+        var manager = owner.getServer().getPluginManager();
+        boolean authMe = manager.isPluginEnabled("AuthMe");
+        boolean nLogin = manager.isPluginEnabled("nLogin");
+        if (authMe == nLogin) return false;
+        if (provider != manager.getPlugin(authMe ? "AuthMe" : "nLogin") || !provider.isEnabled()) return false;
+        String name = command.getName().toLowerCase(Locale.ROOT);
+        if (authMe && name.startsWith("authme:")) name = name.substring("authme:".length());
+        return name.equals("login") || authMe && (name.equals("l") || name.equals("log"));
     }
 }

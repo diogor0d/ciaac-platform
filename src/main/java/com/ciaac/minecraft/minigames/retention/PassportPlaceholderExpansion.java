@@ -16,11 +16,12 @@ public final class PassportPlaceholderExpansion extends PlaceholderExpansion {
         this.plugin = plugin; this.values = new PassportPlaceholderValues(service); this.clock = clock;
     }
 
-    @Override public @NotNull String getIdentifier() { return "ciaac_passport"; }
+    @Override public @NotNull String getIdentifier() { return "ciaac"; }
     @Override public @NotNull String getAuthor() { return "CIAAC"; }
     @Override public @NotNull String getVersion() { return plugin.getPluginMeta().getVersion(); }
     @Override public boolean persist() { return true; }
     @Override public String onRequest(OfflinePlayer player, @NotNull String params) {
-        return player == null ? null : values.value(player.getUniqueId(), params, clock.instant()).orElse(null);
+        if (player == null || !params.regionMatches(true, 0, "passport_", 0, "passport_".length())) return null;
+        return values.value(player.getUniqueId(), params.substring("passport_".length()), clock.instant()).orElse(null);
     }
 }

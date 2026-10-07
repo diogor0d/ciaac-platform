@@ -13,7 +13,10 @@ import org.bukkit.Location;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.EventPriority;
 import org.bukkit.event.Listener;
+import org.bukkit.event.Cancellable;
 import org.bukkit.event.player.PlayerMoveEvent;
+import org.bukkit.event.player.PlayerPortalEvent;
+import org.bukkit.event.player.PlayerTeleportEvent;
 import org.bukkit.plugin.Plugin;
 
 /** Keeps active participants on the combat floor while leaving spectator benches public. */
@@ -35,16 +38,37 @@ public final class ColiseumSpectatorBoundaryListener implements Listener {
         this.plugin = Objects.requireNonNull(plugin, "plugin");
     }
 
-    @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = false)
+    @EventHandler(priority = EventPriority.HIGH, ignoreCancelled = false)
     public void onMove(PlayerMoveEvent event) {
+        if (event.isCancelled()) return;
         Location destination = event.getTo();
         if (destination == null || sameBlock(event.getFrom(), destination)) return;
+        enforceBoundary(event, event.getPlayer(), destination);
+    }
+
+    @EventHandler(priority = EventPriority.HIGH, ignoreCancelled = false)
+    public void onTeleport(PlayerTeleportEvent event) {
+        if (event.isCancelled()) return;
+        Location destination = event.getTo();
+        if (destination == null) return;
+        enforceBoundary(event, event.getPlayer(), destination);
+    }
+
+    @EventHandler(priority = EventPriority.HIGH, ignoreCancelled = false)
+    public void onPortal(PlayerPortalEvent event) {
+        if (event.isCancelled()) return;
+        Location destination = event.getTo();
+        if (destination == null) return;
+        enforceBoundary(event, event.getPlayer(), destination);
+    }
+
+    private void enforceBoundary(Cancellable event, org.bukkit.entity.Player player, Location destination) {
         Optional<ArenaMatch> current = controller.currentMatch()
                 .filter(match -> match.phase() == ArenaPhase.ACTIVE)
-                .filter(match -> match.participants().contains(event.getPlayer().getUniqueId()));
+                .filter(match -> match.participants().contains(player.getUniqueId()));
         if (current.isEmpty()) return;
         ArenaMatch match = current.orElseThrow();
-        boolean fighter = match.activePlayers().contains(event.getPlayer().getUniqueId());
+        boolean fighter = match.activePlayers().contains(player.getUniqueId());
         String permittedRegionId = settings.locations().filter(value -> settings.enabled())
                 .map(value -> fighter ? value.combatFloorRegion() : value.spectatorRegion())
                 .orElse("");
@@ -54,9 +78,9 @@ public final class ColiseumSpectatorBoundaryListener implements Listener {
         if (!permitted) {
             event.setCancelled(true);
             if (fighter) {
-                scheduleForfeit(event.getPlayer(), match.id());
+                scheduleForfeit(player, match.id());
             } else {
-                event.getPlayer().sendMessage("§cEnquanto assistes, permanece nas bancadas do Coliseu.");
+                player.sendMessage("§cEnquanto assistes, permanece nas bancadas do Coliseu.");
             }
         }
     }

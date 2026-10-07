@@ -83,4 +83,4 @@ join-command: /coliseu entrar
 Displays Paper, hologramas, TAB e DiscordSRV são consumidores de projeções; não
 são a fonte de verdade para admissão, resultados ou persistência. A entrega real
 e as políticas de retenção, correção e eliminação permanecem
-`RUNTIME-UNVERIFIED`.
+`UNVERIFIED`.

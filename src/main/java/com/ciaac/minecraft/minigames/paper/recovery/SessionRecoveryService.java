@@ -5,6 +5,9 @@ import com.ciaac.minecraft.minigames.persistence.AuditRepository;
 import com.ciaac.minecraft.minigames.persistence.SessionRepository;
 import com.ciaac.minecraft.minigames.runtime.AdmissionResult;
 import com.ciaac.minecraft.minigames.runtime.AdmissionStatus;
+import com.ciaac.minecraft.minigames.runtime.AuthenticatedSession;
+import com.ciaac.minecraft.minigames.runtime.AuthenticationRegistry;
+import com.ciaac.minecraft.minigames.runtime.ConnectionRegistry;
 import com.ciaac.minecraft.minigames.runtime.OperationIds;
 import com.ciaac.minecraft.minigames.runtime.PlayerSession;
 import com.ciaac.minecraft.minigames.runtime.SessionCoordinator;
@@ -23,10 +26,19 @@ import org.bukkit.entity.Player;
 
 /** Loads blocking sessions and restores them only when the player is safely online. */
 public final class SessionRecoveryService implements SessionViolationHandler {
+    /** The game still owns this restore; generic recovery must not race it. */
+    public static final class DeferredGameRecovery extends RuntimeException {
+        public DeferredGameRecovery() {
+            super("Game recovery is waiting for a safe authenticated participant");
+        }
+    }
+
     private final SessionRepository repository;
     private final SessionRegistry registry;
     private final SessionCoordinator coordinator;
     private final AuditRepository audit;
+    private final AuthenticationRegistry authentication;
+    private final ConnectionRegistry connections;
     private final Clock clock;
     private final Consumer<PlayerSession> stopGame;
 
@@ -35,12 +47,16 @@ public final class SessionRecoveryService implements SessionViolationHandler {
             SessionRegistry registry,
             SessionCoordinator coordinator,
             AuditRepository audit,
+            AuthenticationRegistry authentication,
+            ConnectionRegistry connections,
             Clock clock,
             Consumer<PlayerSession> stopGame) {
         this.repository = Objects.requireNonNull(repository, "repository");
         this.registry = Objects.requireNonNull(registry, "registry");
         this.coordinator = Objects.requireNonNull(coordinator, "coordinator");
         this.audit = Objects.requireNonNull(audit, "audit");
+        this.authentication = Objects.requireNonNull(authentication, "authentication");
+        this.connections = Objects.requireNonNull(connections, "connections");
         this.clock = Objects.requireNonNull(clock, "clock");
         this.stopGame = Objects.requireNonNull(stopGame, "stopGame");
     }
@@ -52,9 +68,14 @@ public final class SessionRecoveryService implements SessionViolationHandler {
         return loaded;
     }
 
-    /** Called only after the connection-bound nLogin authentication event. */
+    /** Called only after connection-bound authentication and provider state completion. */
     public synchronized AdmissionResult onAuthenticated(Player player) {
         Objects.requireNonNull(player, "player");
+        if (!isCurrentlyAuthenticated(player)) {
+            return AdmissionResult.rejected(
+                    "AUTHENTICATION_REQUIRED",
+                    "Conclui primeiro a autenticação da tua sessão antes da recuperação.");
+        }
         PlayerSession session = registry.findByPlayer(player.getUniqueId()).orElse(null);
         if (session == null) {
             return AdmissionResult.rejected("NO_RECOVERY_PENDING", "Não tens nenhuma recuperação pendente.");
@@ -67,7 +88,14 @@ public final class SessionRecoveryService implements SessionViolationHandler {
                     "A tua sessão continua protegida até ser revista.",
                     java.util.Optional.of(session));
         }
-        stopGame.accept(session);
+        AdmissionResult stoppedResult = stopGameAndResult(session);
+        if (stoppedResult != null) {
+            UUID root = operation(session, "AUTHENTICATED_RECOVERY");
+            appendAudit(session, root, "AUTHENTICATED_RECOVERY", stoppedResult.code(), session.phase().name());
+            player.sendMessage(stoppedResult.messagePtPt());
+            return stoppedResult;
+        }
+        requireSameRecoverableSession(session);
         UUID root = operation(session, "AUTHENTICATED_RECOVERY");
         AdmissionResult result = coordinator.recover(session.sessionId(), root, "RESTART_OR_RECONNECT");
         appendAudit(session, root, "AUTHENTICATED_RECOVERY", result.code(), session.phase().name());
@@ -82,14 +110,73 @@ public final class SessionRecoveryService implements SessionViolationHandler {
         Objects.requireNonNull(violation, "violation");
         UUID root = operation(session, "VIOLATION_" + violation.name());
         appendAudit(session, root, "SESSION_VIOLATION", "OBSERVED", violation.name());
+        if (!isCurrentlyAuthenticated(player)) {
+            appendAudit(session, root, "VIOLATION_RECOVERY", "DEFERRED_UNAUTHENTICATED", violation.name());
+            return;
+        }
         if (violation == SessionViolation.DISCONNECT || violation == SessionViolation.CONTROLLED_DEATH
                 || session.phase() == SessionPhase.QUARANTINED || session.phase() == SessionPhase.CLOSED) {
             return;
         }
-        stopGame.accept(session);
+        AdmissionResult stoppedResult = stopGameAndResult(session);
+        if (stoppedResult != null) {
+            appendAudit(session, root, "VIOLATION_RECOVERY", stoppedResult.code(), violation.name());
+            if (player.isOnline()) player.sendMessage(stoppedResult.messagePtPt());
+            return;
+        }
+        requireSameRecoverableSession(session);
         AdmissionResult result = coordinator.recover(session.sessionId(), root, violation.name());
         appendAudit(session, root, "VIOLATION_RECOVERY", result.code(), violation.name());
         if (player.isOnline()) player.sendMessage(result.messagePtPt());
+    }
+
+    private AdmissionResult stopGameAndResult(PlayerSession session) {
+        try {
+            stopGame.accept(session);
+        } catch (DeferredGameRecovery deferred) {
+            return new AdmissionResult(
+                    AdmissionStatus.REJECTED,
+                    "RECOVERY_PENDING",
+                    "A recuperação continua pendente até ser possível restaurar todos os jogadores com segurança.",
+                    java.util.Optional.of(session));
+        }
+        return resultFromCompletedStop(session);
+    }
+
+    /**
+     * Game stop callbacks may synchronously finish and release the same session.
+     * Treat only an observed terminal lifecycle as completed; a missing or
+     * replaced nonterminal identity must continue into coordinator recovery and
+     * fail closed there.
+     */
+    private AdmissionResult resultFromCompletedStop(PlayerSession session) {
+        if (session.phase() == SessionPhase.QUARANTINED) {
+            return new AdmissionResult(
+                    AdmissionStatus.QUARANTINED,
+                    "RECOVERY_QUARANTINED",
+                    "A tua sessão continua protegida até ser revista.",
+                    java.util.Optional.of(session));
+        }
+        if (session.phase() == SessionPhase.CLOSED && registry.findById(session.sessionId()).isEmpty()) {
+            return new AdmissionResult(
+                    AdmissionStatus.RECOVERED,
+                    "RESTORED",
+                    "O teu estado survival foi restaurado.",
+                    java.util.Optional.of(session));
+        }
+        return null;
+    }
+
+    private void requireSameRecoverableSession(PlayerSession session) {
+        if (session.phase().terminal() || registry.findById(session.sessionId()).orElse(null) != session) {
+            throw new IllegalStateException("Session identity changed or is no longer recoverable after game stop");
+        }
+    }
+
+    private boolean isCurrentlyAuthenticated(Player player) {
+        AuthenticatedSession evidence = authentication.current(player.getUniqueId(), clock.instant()).orElse(null);
+        return evidence != null && evidence.playerId().equals(player.getUniqueId())
+                && connections.isCurrent(player, evidence.connectionId());
     }
 
     private void appendAudit(

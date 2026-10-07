@@ -2,8 +2,8 @@
 
 Estado em 2026-08-24 (endurecimento do código-fonte reconciliado):
 
-- `SOURCE-IMPLEMENTED`: `AnvilDodgeGame`, `AnvilDodgeController`, o adaptador de controlador/módulo, o resolvedor/montador, as portas de encaminhamento de eventos e o registo de resultados estão presentes.
-- `RUNTIME-UNVERIFIED`: não foi executada uma instalação, uma aceitação Paper em funcionamento ou um teste Paper descartável.
+- `SOURCE-VERIFIED`: `AnvilDodgeGame`, `AnvilDodgeController`, o adaptador de controlador/módulo, o resolvedor/montador, as portas de encaminhamento de eventos e o registo de resultados estão presentes.
+- `UNVERIFIED`: não foi executada uma instalação, uma aceitação Paper em funcionamento ou um teste Paper descartável.
 
 ## Experiência do jogador e comandos
 

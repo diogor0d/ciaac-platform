@@ -8,10 +8,26 @@
 CIAACPlatform é o plugin Paper modular do CIAAC para minijogos, progressão,
 controlo de carrinhos e observabilidade local.
 
-> **Estado do projeto:** `0.1.0-alpha.1` é uma versão experimental. O código,
-> a compilação e os testes automatizados estão verificados. A aceitação completa
-> em Paper, a integração com plugins externos e a implantação em produção
-> continuam por verificar.
+Este é o repositório canónico do código, das compilações e das releases públicas
+da CIAACPlatform. Em 2026-10-07, o JAR `d6cf9c8eca8d19352e3488f901a83eb8c1348e5471409b69bebadfc8040155cb`
+passou aceitação nativa de
+produção numa partida fixa 1v1 e na recuperação após desconexão do oponente
+sintético. Isto não representa
+aceitação dos restantes minijogos ou de equipas maiores. Consultar a
+[verificação funcional](docs/functional-verification.md) e o
+[registo de ativação](docs/arena-activation.md) para evidência e limites.
+
+> **Estado do projeto:** `0.1.0-alpha.1` é uma versão experimental. Código,
+> compilação e testes automatizados estão verificados. A aceitação em produção
+> da Arena está limitada ao 1v1 fixo e recuperação documentados em
+> [Ativação da Arena](docs/arena-activation.md); outros modos e integrações
+> continuam por validar.
+
+A integração nLogin mantém a admissão/recuperação fechadas enquanto faltar prova
+de conclusão do seu restauro. O [adaptador opcional AuthMe](docs/authentication.md)
+passou ensaios locais de login normal, 2v3, saída e recuperação de crash com
+cinco contas sintéticas. A migração autorizada de produção para AuthMe ocorreu
+em 2026-10-06; o nLogin foi preservado com carregamento desativado.
 
 ## Visão geral
 
@@ -29,8 +45,8 @@ respetivos pré-requisitos não forem validados.
 | Segurança | Eventos locais limitados, validação fechada e fronteiras explícitas de privilégios |
 | Atualizações | Descoberta SemVer, manifesto assinado com Ed25519 e preparação atómica do JAR |
 
-O [índice funcional](docs/README.md) descreve cada módulo e liga a respetiva
-documentação técnica.
+O [índice funcional](docs/README.md) reúne os guias disponíveis para os módulos
+e os contratos partilhados.
 
 ## Requisitos
 
@@ -116,17 +132,22 @@ privado descrito em [SECURITY.md](SECURITY.md).
 
 | Documento | Conteúdo |
 | --- | --- |
-| [Índice funcional](docs/README.md) | Módulos, contratos e navegação por funcionalidade |
+| [Índice funcional](docs/README.md) | Módulos, guias, contratos e navegação por funcionalidade |
+| [Carrinhos](docs/minecarts.md) | Limites por mundo, comandos, permissões e substituições temporárias |
+| [Passaporte](docs/passport.md) | Qualificação, épocas, recompensas, permissões e privacidade |
+| [Eventos de segurança](docs/security-events.md) | Emissão local, privacidade, retenção e contrato do consumidor |
 | [Atualizador](docs/release-updater.md) | Descoberta, manifesto, assinatura e preparação |
 | [Releases](docs/RELEASES.md) | Publicação, validação e recuperação |
 | [Política de segurança](SECURITY.md) | Âmbito e comunicação privada |
-| [Avisos de terceiros](THIRD_PARTY_NOTICES.md) | Dependências e licenças incorporadas |
+| [Componentes de terceiros](THIRD_PARTY_NOTICES.md) | Dependências incluídas e licenças do artefacto |
+| [Estado externo](docs/external-state-adapters.md) | Contrato atual, fornecedores em falta e critérios de restauro |
+| [Ensaios físicos locais](tools/paper-runtime-probes/README.md) | Probe descartável de proteção de pistões e condições do alvo |
 | [`plugin.yml`](src/main/resources/plugin.yml) | Comandos, permissões e identidade do plugin |
 | [`config.yml`](src/main/resources/config.yml) | Configuração e valores iniciais seguros |
 
 ## Estado verificável
 
-Estado em 2026-08-31:
+Checkpoints históricos de 2026-08-31 e estado de produção verificado em 2026-10-07:
 
 | Fronteira | Evidência |
 | --- | --- |
@@ -135,7 +156,7 @@ Estado em 2026-08-31:
 | Conteúdo do repositório | `SOURCE-VERIFIED`: sem dados operacionais, credenciais ou chaves privadas no payload revisto |
 | Release assinada | Consultar a [release publicada](https://github.com/diogor0d/ciaac-platform/releases) |
 | Paper, nLogin, Multiverse, GrimAC e consumo real do atualizador | `UNVERIFIED` |
-| Produção | `UNVERIFIED` |
+| Produção — Arena/AuthMe em 2026-10-07 | JAR `d6cf9c8…`, 449 testes; combate nativo fixo 1v1 e desconexão do oponente sintético/reautenticação com restauro exato dos 15 campos `RUNTIME-VERIFIED`; equipas maiores, espectadores e outros minijogos não verificados |
 
 ## Dados e licenciamento
 

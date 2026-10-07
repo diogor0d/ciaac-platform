@@ -4,13 +4,14 @@ import com.ciaac.minecraft.minigames.runtime.AuthenticatedSession;
 import com.ciaac.minecraft.minigames.runtime.AuthenticationRegistry;
 import com.ciaac.minecraft.minigames.runtime.ConnectionRegistry;
 import com.ciaac.minecraft.minigames.runtime.SessionRegistry;
+import com.ciaac.minecraft.minigames.runtime.SessionPhase;
 import java.time.Clock;
 import java.time.Instant;
-import java.util.HashSet;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Objects;
-import java.util.Set;
 import java.util.UUID;
 import org.bukkit.GameMode;
 import org.bukkit.OfflinePlayer;
@@ -38,7 +39,8 @@ public final class PassportPaperRuntime implements Listener, CommandExecutor, Ta
     private final ConnectionRegistry connections;
     private final SessionRegistry sessions;
     private final Clock clock;
-    private final Set<UUID> activityCandidates = new HashSet<>();
+    private final Map<UUID, UUID> activityCandidates = new HashMap<>();
+    private final Map<UUID, java.time.LocalDate> creditedJoinDays = new HashMap<>();
     private final BukkitTask sampler;
     private final PassportPlaceholderExpansion placeholders;
     private final PassportSafezonePresentation safezonePresentation;
@@ -85,17 +87,7 @@ public final class PassportPaperRuntime implements Listener, CommandExecutor, Ta
     /** Called only by the verified nLogin post-authentication adapter. */
     public void onAuthenticated(Player player) {
         if (!passport.configuration().enabled()) return;
-        Instant now = clock.instant();
-        AuthenticatedSession capability = authentication.current(player.getUniqueId(), now).orElse(null);
-        if (capability == null) return;
-        UUID connectionId = capability.connectionId();
-        plugin.getServer().getScheduler().runTaskLater(plugin, () -> {
-            Instant currentTime = clock.instant();
-            AuthenticatedSession current = authentication.current(player.getUniqueId(), currentTime).orElse(null);
-            if (current == null || !current.connectionId().equals(connectionId)
-                    || !connections.isCurrent(player, connectionId) || excluded(player)) return;
-            passport.qualifyJoin(player.getUniqueId(), connectionId, current.authenticatedAt(), currentTime);
-        }, 20L * 60L * 10L);
+        qualifyCurrentJoin(player, clock.instant());
     }
 
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
@@ -114,29 +106,51 @@ public final class PassportPaperRuntime implements Listener, CommandExecutor, Ta
     private void mark(Player player) {
         if (!passport.configuration().enabled()) return;
         Instant now = clock.instant();
-        if (!excluded(player) && authentication.current(player.getUniqueId(), now).isPresent()) {
-            activityCandidates.add(player.getUniqueId());
-        }
+        eligibleAuthentication(player, now).ifPresent(auth ->
+                activityCandidates.put(player.getUniqueId(), auth.connectionId()));
     }
 
     private void sampleCandidates() {
         java.time.LocalDate today = passport.calendar().localDate(clock.instant());
         if (!today.equals(lastPrivacyPurge)) {
             passport.purgeDetailedCredits(clock.instant());
-            passport.finalizePreviousSeason(clock.instant());
+            if (passport.configuration().enabled()) passport.finalizePreviousSeason(clock.instant());
             lastPrivacyPurge = today;
         }
         if (!passport.configuration().enabled()) { activityCandidates.clear(); return; }
-        Set<UUID> candidates = Set.copyOf(activityCandidates);
+        Map<UUID, UUID> candidates = Map.copyOf(activityCandidates);
         activityCandidates.clear();
         Instant now = clock.instant();
-        for (UUID id : candidates) {
+        for (Player player : plugin.getServer().getOnlinePlayers()) qualifyCurrentJoin(player, now);
+        creditedJoinDays.keySet().removeIf(id -> plugin.getServer().getPlayer(id) == null);
+        for (var candidate : candidates.entrySet()) {
+            UUID id = candidate.getKey();
             Player player = plugin.getServer().getPlayer(id);
-            AuthenticatedSession auth = authentication.current(id, now).orElse(null);
-            if (player == null || auth == null || excluded(player) || sessions.findByPlayer(id)
-                    .filter(session -> !session.phase().terminal()).isPresent()) continue;
+            if (player == null) continue;
+            AuthenticatedSession auth = eligibleAuthentication(player, now).orElse(null);
+            if (auth == null || !auth.connectionId().equals(candidate.getValue())) continue;
             passport.sampleActiveMinute(id, auth.connectionId(), now);
         }
+    }
+
+    private void qualifyCurrentJoin(Player player, Instant now) {
+        AuthenticatedSession auth = eligibleAuthentication(player, now).orElse(null);
+        if (auth == null || now.isBefore(auth.authenticatedAt().plus(passport.configuration().joinQualification()))) return;
+        java.time.LocalDate date = passport.calendar().localDate(now);
+        if (date.equals(creditedJoinDays.get(player.getUniqueId()))) return;
+        var result = passport.qualifyJoin(player.getUniqueId(), auth.connectionId(), auth.authenticatedAt(), now);
+        if (result.outcome() == PassportService.Outcome.CREDITED
+                || result.outcome() == PassportService.Outcome.ALREADY_CREDITED) {
+            creditedJoinDays.put(player.getUniqueId(), date);
+        }
+    }
+
+    private java.util.Optional<AuthenticatedSession> eligibleAuthentication(Player player, Instant now) {
+        if (!passport.configuration().enabled() || !player.isOnline() || excluded(player)
+                || sessions.findByPlayer(player.getUniqueId())
+                        .filter(session -> session.phase() != SessionPhase.CLOSED).isPresent()) return java.util.Optional.empty();
+        return authentication.current(player.getUniqueId(), now)
+                .filter(auth -> connections.isCurrent(player, auth.connectionId()));
     }
 
     private boolean excluded(Player player) {
@@ -151,7 +165,8 @@ public final class PassportPaperRuntime implements Listener, CommandExecutor, Ta
             sender.sendMessage("Este comando só está disponível para jogadores autenticados."); return true;
         }
         Instant now = clock.instant();
-        if (authentication.current(player.getUniqueId(), now).isEmpty()) {
+        if (authentication.current(player.getUniqueId(), now)
+                .filter(auth -> connections.isCurrent(player, auth.connectionId())).isEmpty()) {
             player.sendMessage("Autentica-te antes de consultares o Passaporte CIAAC."); return true;
         }
         try {
@@ -191,8 +206,8 @@ public final class PassportPaperRuntime implements Listener, CommandExecutor, Ta
 
     private boolean claim(Player player, String[] args, Instant now) {
         if (!player.hasPermission("ciaac.retention.claim") || args.length != 2) return send(player, List.of("Uso: /passaporte reclamar <recompensa>"));
-        if (sessions.findByPlayer(player.getUniqueId()).filter(session -> !session.phase().terminal()).isPresent()) {
-            return send(player, List.of("Sai do minijogo e conclui qualquer recuperação antes de reclamares recompensas."));
+        if (eligibleAuthentication(player, now).isEmpty()) {
+            return send(player, List.of("Esta sessão não pode reclamar recompensas. Conclui qualquer minijogo, recuperação ou elevação antes de tentares novamente."));
         }
         return send(player, List.of(passport.claim(player.getUniqueId(), args[1], now).messagePtPt()));
     }
@@ -200,6 +215,8 @@ public final class PassportPaperRuntime implements Listener, CommandExecutor, Ta
     private boolean personalize(Player player, String[] args, Instant now) {
         if (args.length != 3) return send(player, List.of(
                 "Uso: /passaporte personalizar <titulo|distintivo|particulas> <recompensa|nenhum>"));
+        if (eligibleAuthentication(player, now).isEmpty()) return send(player, List.of(
+                "Conclui qualquer minijogo, recuperação ou elevação antes de personalizares o Passaporte."));
         if (args[1].equalsIgnoreCase("particulas") && !player.hasPermission("ciaac.retention.particles")) {
             return send(player, List.of("Não tens permissão para usar partículas do Passaporte."));
         }
@@ -216,14 +233,19 @@ public final class PassportPaperRuntime implements Listener, CommandExecutor, Ta
 
     @Override
     public List<String> onTabComplete(CommandSender sender, Command command, String alias, String[] args) {
-        if (args.length == 1) return List.of("recompensas", "classificacao", "reclamar", "personalizar", "admin");
+        if (args.length == 1) {
+            List<String> options = new java.util.ArrayList<>(
+                    List.of("recompensas", "classificacao", "reclamar", "personalizar"));
+            if (sender.hasPermission("ciaac.retention.admin.view")) options.add("admin");
+            return List.copyOf(options);
+        }
         if (args.length == 2 && args[0].equalsIgnoreCase("classificacao")) return List.of("presencas", "atividade", "pontos");
         if (args.length == 2 && args[0].equalsIgnoreCase("personalizar")) return List.of("titulo", "distintivo", "particulas");
         return List.of();
     }
 
     @Override public void close() {
-        sampler.cancel(); activityCandidates.clear();
+        sampler.cancel(); activityCandidates.clear(); creditedJoinDays.clear();
         if (placeholders != null) placeholders.unregister();
         if (safezonePresentation != null) safezonePresentation.close();
     }

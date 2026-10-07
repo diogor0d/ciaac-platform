@@ -15,15 +15,22 @@ public record CuboidRegion(
         int maxY,
         int maxZ) {
 
+    private static final long MAX_VOLUME = 100_000_000L;
+
     public CuboidRegion {
         Objects.requireNonNull(worldId, "worldId");
         if (minX > maxX || minY > maxY || minZ > maxZ) {
             throw new IllegalArgumentException("Cuboid minimum coordinates must not exceed maxima");
         }
-        long volume = (long) (maxX - minX + 1)
-                * (long) (maxY - minY + 1)
-                * (long) (maxZ - minZ + 1);
-        if (volume <= 0 || volume > 100_000_000L) {
+        long widthX = (long) maxX - minX + 1L;
+        long widthY = (long) maxY - minY + 1L;
+        long widthZ = (long) maxZ - minZ + 1L;
+        long volume = widthX;
+        if (widthY > MAX_VOLUME / volume) {
+            throw new IllegalArgumentException("Cuboid volume is invalid or unreasonably large");
+        }
+        volume *= widthY;
+        if (widthZ > MAX_VOLUME / volume) {
             throw new IllegalArgumentException("Cuboid volume is invalid or unreasonably large");
         }
     }

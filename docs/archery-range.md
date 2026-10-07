@@ -2,8 +2,8 @@
 
 Estado em 2026-08-24 (endurecimento do código-fonte reconciliado):
 
-- `SOURCE-IMPLEMENTED`: o domínio, o controlador, o assembler e o router de eventos estão presentes.
-- `RUNTIME-UNVERIFIED`: a ligação Paper, as entidades de alvo e a entrega de apresentações ainda não foram validadas em execução.
+- `SOURCE-VERIFIED`: o domínio, o controlador, o assembler e o router de eventos estão presentes.
+- `UNVERIFIED`: a ligação Paper, as entidades de alvo e a entrega de apresentações ainda não foram validadas em execução.
 
 ## Experiência do jogador e comandos
 
@@ -50,7 +50,7 @@ ciaac-archery-target:<configured-target-id>:<score-band>
 (normalmente `bullseye`, `inner`, `middle` ou `outer`). A entidade tem
 de estar na região registada da lane. Tags ausentes, estrangeiras, ambíguas ou
 fora da região fecham a operação; o projétil é limpo. A ponte entre tags e
-entidades Paper em funcionamento permanece `RUNTIME-UNVERIFIED`.
+entidades Paper em funcionamento permanece `UNVERIFIED`.
 
 O controlador expõe as marcas tipadas e as chaves PDC
 (`ciaac:archery-session`, `ciaac:archery-lane`,

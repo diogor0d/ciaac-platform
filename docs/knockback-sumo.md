@@ -2,10 +2,10 @@
 
 Estado em 2026-08-24 (endurecimento do código-fonte reconciliado):
 
-- `SOURCE-IMPLEMENTED`: `SumoSession`, `SumoPaperController`, `SumoModule`,
+- `SOURCE-VERIFIED`: `SumoSession`, `SumoPaperController`, `SumoModule`,
   o resolver, o assembler, o encaminhador partilhado de eventos e o registo
   de resultados estão presentes nesta cópia de trabalho.
-- `RUNTIME-UNVERIFIED`: não foi executada qualquer instalação, teste de
+- `UNVERIFIED`: não foi executada qualquer instalação, teste de
   aceitação Paper em funcionamento ou teste Paper descartável. Os testes Maven
   completos e Paper descartável ficam adiados.
 

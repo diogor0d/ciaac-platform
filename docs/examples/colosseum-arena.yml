@@ -1,0 +1,55 @@
+# INTENDED — preparado em 2026-10-04; ainda não aplicado ao servidor.
+# Substituir apenas modules.arena na configuração existente. Exige o novo JAR.
+modules:
+  arena:
+    enabled: true
+    world: {name: world, uuid: 620f870d-9c24-4573-bb95-db1dde2e4b41}
+    regions:
+      combat-floor:
+        min: [-418, 0, 6425]
+        max: [-321, 0, 6470]
+        full-height: true
+      spectator-benches:
+        min: [-380, 92, 6471]
+        max: [-360, 110, 6478]
+    locations:
+      team-a: {x: -397.5, y: 87.0, z: 6447.5, yaw: -90, pitch: 0}
+      team-b: {x: -341.5, y: 87.0, z: 6447.5, yaw: 90, pitch: 0}
+      exit: {x: -369.5, y: 98.0, z: 6473.5, yaw: 180, pitch: 0}
+      recovery: {x: -369.5, y: 98.0, z: 6473.5, yaw: 180, pitch: 0}
+    minimum-players: 2
+    max-team-size: 3
+    allow-asymmetric-formats: true
+    allowed-asymmetric-formats: [2v3, 3v2]
+    round-seconds: 300
+    reconnect-grace-seconds: 0
+    friendly-fire: false
+    kit-modes: [fixed, mirrored-survival]
+    fixed-kits:
+      coliseu: [IRON_SWORD, SHIELD, IRON_HELMET, IRON_CHESTPLATE, IRON_LEGGINGS, IRON_BOOTS]
+    protected-survival:
+      prohibited-materials:
+        - ENDER_PEARL
+        - CHORUS_FRUIT
+        - ELYTRA
+        - FIREWORK_ROCKET
+        - WATER_BUCKET
+        - LAVA_BUCKET
+        - POWDER_SNOW_BUCKET
+        - FLINT_AND_STEEL
+        - FIRE_CHARGE
+        - TNT
+        - TNT_MINECART
+        - END_CRYSTAL
+        - RESPAWN_ANCHOR
+        - ARMOR_STAND
+        - ITEM_FRAME
+        - GLOW_ITEM_FRAME
+        - OAK_BOAT
+        - MINECART
+    staked-survival:
+      enabled: false
+      allowed-formats: [1v1]
+      prohibited-materials: [ENDER_PEARL, CHORUS_FRUIT, ELYTRA, FIREWORK_ROCKET, WATER_BUCKET, LAVA_BUCKET, POWDER_SNOW_BUCKET, FLINT_AND_STEEL, FIRE_CHARGE, TNT, TNT_MINECART, END_CRYSTAL, RESPAWN_ANCHOR]
+      consent-timeout-seconds: 60
+      no-contest-policy: refund

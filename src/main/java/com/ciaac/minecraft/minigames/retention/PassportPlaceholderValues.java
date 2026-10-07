@@ -13,8 +13,10 @@ public final class PassportPlaceholderValues {
 
     public Optional<String> value(UUID playerId, String parameter, Instant now) {
         if (playerId == null || parameter == null) return Optional.empty();
+        String normalized = parameter.toLowerCase(Locale.ROOT);
+        if (!supported(normalized)) return Optional.empty();
         PassportService.PassportSnapshot snapshot = service.passport(playerId, now);
-        return switch (parameter.toLowerCase(Locale.ROOT)) {
+        return switch (normalized) {
             case "season" -> Optional.of(snapshot.season().id());
             case "join_streak" -> Optional.of(Integer.toString(snapshot.currentJoinStreak()));
             case "longest_join_streak" -> Optional.of(Integer.toString(snapshot.longestJoinStreak()));
@@ -33,6 +35,15 @@ public final class PassportPlaceholderValues {
             case "rank_points" -> Optional.of(Integer.toString(service.rank(playerId,
                     PassportService.LeaderboardMetric.PASSPORT_POINTS, now)));
             default -> Optional.empty();
+        };
+    }
+
+    private static boolean supported(String parameter) {
+        return switch (parameter) {
+            case "season", "join_streak", "longest_join_streak", "active_days",
+                    "weekly_objectives", "points", "join_freeze", "title", "badge", "chat_badge",
+                    "rank_join_streak", "rank_active_days", "rank_points" -> true;
+            default -> false;
         };
     }
 }

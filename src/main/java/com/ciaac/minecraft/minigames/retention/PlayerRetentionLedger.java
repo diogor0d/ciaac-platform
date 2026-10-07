@@ -23,6 +23,21 @@ public final class PlayerRetentionLedger {
     private int longestJoinStreak;
 
     public PlayerRetentionLedger(UUID playerId) { this.playerId = Objects.requireNonNull(playerId, "playerId"); }
+
+    /** Returns a detached copy, including every nested mutable projection. */
+    public PlayerRetentionLedger copy() {
+        PlayerRetentionLedger copy = new PlayerRetentionLedger(playerId);
+        copy.eventsBySource.putAll(eventsBySource);
+        daily.forEach((date, activity) -> copy.daily.put(date, activity.copy()));
+        seasons.forEach((id, progress) -> copy.seasons.put(id, progress.copy()));
+        copy.entitlements.putAll(entitlements);
+        copy.selections.putAll(selections);
+        copy.lastJoinDate = lastJoinDate;
+        copy.currentJoinStreak = currentJoinStreak;
+        copy.longestJoinStreak = longestJoinStreak;
+        return copy;
+    }
+
     public UUID playerId() { return playerId; }
     public int currentJoinStreak() { return currentJoinStreak; }
     public int longestJoinStreak() { return longestJoinStreak; }
@@ -96,6 +111,11 @@ public final class PlayerRetentionLedger {
         Set<Instant> samples() { return Set.copyOf(sampledMinutes); }
         boolean addMinute(Instant minute) { return sampledMinutes.add(minute); }
         void markActiveQualified() { activeQualified = true; }
+        private DailyActivity copy() {
+            DailyActivity copy = new DailyActivity();
+            copy.restore(joinQualified, activeQualified, sampledMinutes);
+            return copy;
+        }
         void restore(boolean join, boolean active, Set<Instant> samples) {
             joinQualified = join;
             activeQualified = active;
@@ -129,6 +149,12 @@ public final class PlayerRetentionLedger {
         void milestone() { seasonMilestones++; }
         void awardJoinFreeze() { joinFreezeAvailable = true; }
         void purgeWeeksBefore(LocalDate cutoff) { weeklyObjectiveWeeks.removeIf(week -> week.isBefore(cutoff)); }
+        private SeasonProgress copy() {
+            SeasonProgress copy = new SeasonProgress();
+            copy.restore(points, activeDays, weeklyObjectives, seasonMilestones,
+                    joinFreezeAvailable, weeklyObjectiveWeeks);
+            return copy;
+        }
         Set<LocalDate> weeklyWeeks() { return Set.copyOf(weeklyObjectiveWeeks); }
         void restore(int restoredPoints, int restoredActiveDays, int restoredWeeklyObjectives,
                      int restoredMilestones, boolean restoredFreezeAvailable, Set<LocalDate> weeks) {

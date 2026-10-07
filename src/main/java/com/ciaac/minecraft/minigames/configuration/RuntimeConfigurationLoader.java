@@ -149,6 +149,15 @@ public final class RuntimeConfigurationLoader {
             String path = root + ".regions." + key;
             ConfigurationSection value = section.getConfigurationSection(key);
             if (value == null) continue;
+            boolean fullHeight = false;
+            if (value.isSet("full-height")) {
+                if (!value.isBoolean("full-height")) {
+                    problems.add(problem("REGION_INVALID", path + ".full-height",
+                            "A opção full-height tem de ser um valor booleano explícito."));
+                    continue;
+                }
+                fullHeight = value.getBoolean("full-height");
+            }
             List<Integer> minimum = value.getIntegerList("min");
             List<Integer> maximum = value.getIntegerList("max");
             if (minimum.size() != 3 || maximum.size() != 3) {
@@ -160,7 +169,7 @@ public final class RuntimeConfigurationLoader {
                 RegionSpec previous = output.put(key, new RegionSpec(
                         world,
                         minimum.get(0), minimum.get(1), minimum.get(2),
-                        maximum.get(0), maximum.get(1), maximum.get(2)));
+                        maximum.get(0), maximum.get(1), maximum.get(2), fullHeight));
                 if (previous != null) throw new IllegalArgumentException("duplicate region");
             } catch (IllegalArgumentException exception) {
                 problems.add(problem("REGION_INVALID", path, "Os limites da região são inválidos."));

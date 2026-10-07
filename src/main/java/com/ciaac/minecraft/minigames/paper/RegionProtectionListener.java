@@ -15,16 +15,23 @@ import java.util.Objects;
 import java.util.Optional;
 import org.bukkit.Location;
 import org.bukkit.block.Block;
+import org.bukkit.block.BlockFace;
+import org.bukkit.block.data.Directional;
 import org.bukkit.entity.Player;
 import org.bukkit.event.Cancellable;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.EventPriority;
+import org.bukkit.event.Event.Result;
 import org.bukkit.event.Listener;
 import org.bukkit.event.block.BlockBreakEvent;
 import org.bukkit.event.block.BlockBurnEvent;
 import org.bukkit.event.block.BlockExplodeEvent;
 import org.bukkit.event.block.BlockFadeEvent;
+import org.bukkit.event.block.BlockFertilizeEvent;
 import org.bukkit.event.block.BlockFromToEvent;
+import org.bukkit.event.block.BlockFormEvent;
+import org.bukkit.event.block.BlockIgniteEvent;
+import org.bukkit.event.block.BlockRedstoneEvent;
 import org.bukkit.event.block.BlockGrowEvent;
 import org.bukkit.event.block.BlockPistonExtendEvent;
 import org.bukkit.event.block.BlockPistonRetractEvent;
@@ -32,14 +39,17 @@ import org.bukkit.event.block.BlockPlaceEvent;
 import org.bukkit.event.block.BlockSpreadEvent;
 import org.bukkit.event.block.EntityBlockFormEvent;
 import org.bukkit.event.entity.EntityChangeBlockEvent;
+import org.bukkit.event.entity.EntityInteractEvent;
 import org.bukkit.event.entity.EntityExplodeEvent;
 import org.bukkit.event.hanging.HangingBreakEvent;
 import org.bukkit.event.hanging.HangingPlaceEvent;
 import org.bukkit.event.player.PlayerBucketEmptyEvent;
 import org.bukkit.event.player.PlayerBucketFillEvent;
 import org.bukkit.event.player.PlayerMoveEvent;
+import org.bukkit.event.player.PlayerInteractEvent;
 import org.bukkit.event.player.PlayerPortalEvent;
 import org.bukkit.event.player.PlayerTeleportEvent;
+import org.bukkit.event.world.StructureGrowEvent;
 import org.bukkit.event.vehicle.VehicleMoveEvent;
 
 /** Plugin-side immutable-region and participant-containment enforcement. */
@@ -237,6 +247,47 @@ public final class RegionProtectionListener implements Listener {
     }
 
     @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = false)
+    public void onInteract(PlayerInteractEvent event) {
+        if (event.getClickedBlock() != null && immutable(event.getClickedBlock())) {
+            // Freeze doors, buttons, levers and physical pressure plates without disabling bow/shield use.
+            event.setUseInteractedBlock(Result.DENY);
+        }
+    }
+
+    @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = false)
+    public void onEntityInteract(EntityInteractEvent event) {
+        if (immutable(event.getBlock())) event.setCancelled(true);
+    }
+
+    @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = false)
+    public void onIgnite(BlockIgniteEvent event) {
+        if (immutable(event.getBlock())) event.setCancelled(true);
+    }
+
+    @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = false)
+    public void onForm(BlockFormEvent event) {
+        if (immutable(event.getBlock())) event.setCancelled(true);
+    }
+
+    @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = false)
+    public void onFertilize(BlockFertilizeEvent event) {
+        if (immutable(event.getBlock()) || event.getBlocks().stream().anyMatch(state -> immutable(state.getBlock())))
+            event.setCancelled(true);
+    }
+
+    @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = false)
+    public void onStructureGrow(StructureGrowEvent event) {
+        if (regions.at(event.getLocation()).filter(ProtectedRegion::immutable).isPresent()
+                || event.getBlocks().stream().anyMatch(state -> immutable(state.getBlock())))
+            event.setCancelled(true);
+    }
+
+    @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = false)
+    public void onRedstone(BlockRedstoneEvent event) {
+        if (immutable(event.getBlock())) event.setNewCurrent(event.getOldCurrent());
+    }
+
+    @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = false)
     public void onBucketEmpty(PlayerBucketEmptyEvent event) {
         if (immutable(event.getBlock()) || immutable(event.getBlockClicked())) event.setCancelled(true);
     }
@@ -253,7 +304,8 @@ public final class RegionProtectionListener implements Listener {
 
     @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = false)
     public void onPistonExtend(BlockPistonExtendEvent event) {
-        if (event.getBlocks().stream().anyMatch(block ->
+        if (immutable(event.getBlock()) || immutable(pistonHead(event.getBlock(), event.getDirection()))
+                || event.getBlocks().stream().anyMatch(block ->
                 immutable(block) || immutable(block.getRelative(event.getDirection())))) {
             event.setCancelled(true);
         }
@@ -261,10 +313,18 @@ public final class RegionProtectionListener implements Listener {
 
     @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = false)
     public void onPistonRetract(BlockPistonRetractEvent event) {
-        if (event.getBlocks().stream().anyMatch(block ->
+        if (immutable(event.getBlock()) || immutable(pistonHead(event.getBlock(), event.getDirection()))
+                || event.getBlocks().stream().anyMatch(block ->
                 immutable(block) || immutable(block.getRelative(event.getDirection())))) {
             event.setCancelled(true);
         }
+    }
+
+    private Block pistonHead(Block piston, BlockFace fallback) {
+        // Paper reports facing for empty retractions and movement for pulled blocks.
+        BlockFace facing = piston.getBlockData() instanceof Directional directional
+                ? directional.getFacing() : fallback;
+        return piston.getRelative(facing);
     }
 
     @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = false)

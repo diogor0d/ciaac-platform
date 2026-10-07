@@ -124,7 +124,7 @@ public final class ColorFloorController {
         try {
             if (game.phase() == ColorFloorPhase.DISABLED) game.open(nextOperation());
             teleport(player, settings.start());
-            sessions.activate(session.sessionId(), OperationIds.derive(request.requestId(), "GAME_ACTIVE"), now);
+            sessions.activate(session.sessionId(), OperationIds.derive(request.requestId(), "GAME_ACTIVE"), clock.instant());
             game.join(player.getUniqueId(), nextOperation());
             admittedPlayers++;
             player.sendMessage("§aChão de Cores: estás na fila. Prepara-te!");

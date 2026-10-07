@@ -30,6 +30,11 @@ antes da publicação.
   servidor de destino e não por este JAR. A CIAACPlatform usa o SnakeYAML 2.2
   fornecido pelo Paper para rejeitar chaves duplicadas em `minecarts.yml`.
 - JUnit Jupiter é usado apenas nos testes.
+- LuckPerms API `net.luckperms:api:5.5` é `provided`: permite ler nós,
+  contextos e grupos através da API oficial, sem incluir classes LuckPerms no
+  JAR. A manutenção da integração cabe aos responsáveis da CIAACPlatform;
+  alterar esta versão exige revisão de compatibilidade e ensaio Paper.
+  [Origem e documentação oficial](https://luckperms.net/wiki/Developer-API).
 - Apache Maven Shade Plugin é uma ferramenta de compilação e não é incluído
   como código de execução do plugin.
 

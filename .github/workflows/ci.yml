@@ -21,5 +21,9 @@ jobs:
           distribution: temurin
           java-version: '25'
           cache: maven
+      - name: Validar ligações da documentação
+        run: |
+          python3 scripts/check_docs.py --self-test
+          python3 scripts/check_docs.py
       - name: Testar e empacotar
         run: mvn --batch-mode --no-transfer-progress clean verify

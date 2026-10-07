@@ -12,6 +12,7 @@ import com.ciaac.minecraft.minigames.updater.UpdaterConfiguration;
 import com.ciaac.minecraft.minigames.updater.UpdaterConfigurationLoader;
 import com.ciaac.minecraft.minigames.updater.UpdaterService;
 import com.ciaac.minecraft.platform.command.CiaacPlatformCommand;
+import com.ciaac.minecraft.platform.recovery.RecoveryAdmissionGate;
 import com.ciaac.minecraft.platform.securityevents.SecurityEvent;
 import com.ciaac.minecraft.platform.securityevents.SecurityEventLogger;
 import java.io.File;
@@ -30,22 +31,31 @@ public final class CiaacPlatformPlugin extends JavaPlugin {
     private MinecartSpeedService minecarts;
     private UpdaterService updater;
     private SecurityEventLogger securityEvents;
+    private RecoveryAdmissionGate recoveryAdmission;
 
     @Override
     public void onEnable() {
-        saveDefaultConfig();
-        saveBundledResource("minecarts.yml");
-        saveBundledResource("retention.yml");
-        securityEvents = new SecurityEventLogger(getLogger(), "ciaac-platform");
-        moduleCatalog = ModuleCatalog.foundationCatalog();
-
-        UpdaterConfigurationLoader.LoadResult updaterLoad = new UpdaterConfigurationLoader().load(getConfig());
-        updaterLoad.diagnosticPtPt().ifPresent(message -> getLogger().warning(message));
-        RuntimeConfiguration configuration = new RuntimeConfigurationLoader().load(getConfig());
-        UpdaterConfiguration updaterConfiguration = updaterLoad.configuration();
-        updater = UpdaterService.start(this, updaterConfiguration, installedPluginFileName());
-
+        recoveryAdmission = new RecoveryAdmissionGate();
         try {
+            getServer().getPluginManager().registerEvents(recoveryAdmission, this);
+        } catch (RuntimeException | LinkageError failure) {
+            getLogger().severe("Não foi possível proteger a admissão; foi solicitado o encerramento do servidor.");
+            getServer().shutdown();
+            return;
+        }
+        try {
+            saveDefaultConfig();
+            saveBundledResource("minecarts.yml");
+            saveBundledResource("retention.yml");
+            securityEvents = new SecurityEventLogger(getLogger(), "ciaac-platform");
+            moduleCatalog = ModuleCatalog.foundationCatalog();
+
+            UpdaterConfigurationLoader.LoadResult updaterLoad = new UpdaterConfigurationLoader().load(getConfig());
+            updaterLoad.diagnosticPtPt().ifPresent(message -> getLogger().warning(message));
+            RuntimeConfiguration configuration = new RuntimeConfigurationLoader().load(getConfig());
+            UpdaterConfiguration updaterConfiguration = updaterLoad.configuration();
+            updater = UpdaterService.start(this, updaterConfiguration, installedPluginFileName());
+
             minigames = MinigamePlatformRuntime.start(this, new ConfiguredModuleAssembler());
             configuration.globalProblems().forEach(problem -> getLogger().severe(
                     "A configuração ficou fechada em " + problem.path() + ": " + problem.code()));
@@ -54,9 +64,22 @@ public final class CiaacPlatformPlugin extends JavaPlugin {
                     + failure.getClass().getSimpleName());
             emit(SecurityEvent.system(Instant.now(), SecurityEvent.Category.RECOVERY,
                     "MINIGAMES_START_FAILED", SecurityEvent.Severity.HIGH, "FAILED"));
+            recoveryAdmission.fail();
+            try {
+                recoveryAdmission.denyOnlinePlayers(getServer());
+            } catch (RuntimeException | LinkageError denialFailure) {
+                getLogger().severe("Não foi possível retirar os jogadores após a falha de recuperação; foi solicitado o encerramento do servidor.");
+                getServer().shutdown();
+            }
+            return;
         }
 
-        startMinecarts();
+        recoveryAdmission.ready();
+        try {
+            startMinecarts();
+        } catch (RuntimeException | LinkageError failure) {
+            getLogger().severe("O módulo de carrinhos ficou fechado: " + failure.getClass().getSimpleName());
+        }
         emit(SecurityEvent.system(Instant.now(), SecurityEvent.Category.LIFECYCLE,
                 "PLUGIN_ENABLED", SecurityEvent.Severity.INFO, "SUCCESS"));
         getLogger().info("CIAACPlatform carregada; os módulos novos permanecem fechados até validação específica.");
@@ -64,6 +87,7 @@ public final class CiaacPlatformPlugin extends JavaPlugin {
 
     @Override
     public void onDisable() {
+        if (recoveryAdmission != null) recoveryAdmission.fail();
         emit(SecurityEvent.system(Instant.now(), SecurityEvent.Category.LIFECYCLE,
                 "PLUGIN_DISABLED", SecurityEvent.Severity.INFO, "SUCCESS"));
         RuntimeException failure = null;
@@ -101,6 +125,10 @@ public final class CiaacPlatformPlugin extends JavaPlugin {
             getLogger().warning("Não foi possível emitir um evento estruturado de segurança: "
                     + failure.getClass().getSimpleName());
         }
+    }
+
+    public void unregisterRuntimeListeners() {
+        RecoveryAdmissionGate.unregisterRuntimeListeners(this, recoveryAdmission);
     }
 
     private void startMinecarts() {

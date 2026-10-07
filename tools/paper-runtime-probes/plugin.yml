@@ -1,0 +1,6 @@
+name: CiaacPistonProbe
+version: '0.1.0'
+main: local.harness.CiaacPistonProbe
+api-version: '26.2'
+depend: [CIAACPlatform]
+softdepend: [Essentials, Vault, LuckPerms]

@@ -2,8 +2,10 @@ package com.ciaac.minecraft.minigames.paper.module;
 
 import com.ciaac.minecraft.minigames.arena.ArenaEquipmentContract;
 import com.ciaac.minecraft.minigames.arena.ArenaKitMode;
+import com.ciaac.minecraft.minigames.arena.ArenaMatch;
 import com.ciaac.minecraft.minigames.arena.ArenaParty;
 import com.ciaac.minecraft.minigames.arena.ArenaPartyRegistry;
+import com.ciaac.minecraft.minigames.arena.StakedEscrow;
 import com.ciaac.minecraft.minigames.arena.TeamRoster;
 import com.ciaac.minecraft.minigames.core.GameKey;
 import com.ciaac.minecraft.minigames.module.ModuleActionResult;
@@ -41,6 +43,7 @@ public final class ColiseumModule implements MinigameModule {
     private final Duration challengeLifetime;
     private final Set<UUID> queuePlayers = new LinkedHashSet<>();
     private final java.util.Map<UUID, PendingChallenge> pendingChallenges = new java.util.LinkedHashMap<>();
+    private UUID readinessPromptMatchId;
     private boolean faulted;
 
     public ColiseumModule(ColiseumController controller, ModuleIdentity identity,
@@ -82,7 +85,9 @@ public final class ColiseumModule implements MinigameModule {
             ArenaStatus value = controller.status();
             String phase = value.phase().map(Enum::name).orElse(value.enabled() ? "WAITING" : "CLOSED");
             boolean joinable = value.enabled() && (value.phase().isEmpty() || phase.equals("WAITING"));
-            return ModuleStatuses.of(key(), value.enabled(), phase, joinable, value.queuedPlayers(),
+            int participants = controller.currentMatch().map(match -> match.participants().size())
+                    .orElse(value.queuedPlayers());
+            return ModuleStatuses.of(key(), value.enabled(), phase, joinable, participants,
                     OptionalInt.empty(), value.messagePtPt());
         } catch (RuntimeException ignored) {
             faulted = true;
@@ -139,11 +144,14 @@ public final class ColiseumModule implements MinigameModule {
     @Override public synchronized ModuleActionResult leave(Player player) {
         try {
             Player value = Objects.requireNonNull(player, "player");
-            Set<UUID> roster = parties.findByMember(value.getUniqueId())
-                    .map(party -> Set.copyOf(party.members())).orElse(Set.of(value.getUniqueId()));
+            Set<UUID> reservedParticipants = controller.currentMatch()
+                    .map(ArenaMatch::participants).orElse(Set.of());
             ArenaPlayerResponse response = controller.leave(value);
-            if (response.code().equals("LEFT_QUEUE") || response.code().equals("RESTORED")
-                    || response.code().equals("RESTORED_UNRANKED")) queuePlayers.removeAll(roster);
+            if (response.code().equals("PRESTART_CANCELLED")) {
+                readinessPromptMatchId = null;
+                notifyParticipants(reservedParticipants, response.messagePtPt(), value.getUniqueId());
+            }
+            reconcileQueuePlayers();
             return ModuleResults.arena(response);
         } catch (RuntimeException ignored) {
             return ModuleResults.failure();
@@ -153,7 +161,19 @@ public final class ColiseumModule implements MinigameModule {
     @Override public synchronized ModuleActionResult ready(Player player) {
         if (faulted) return faultedResult();
         try {
-            return ModuleResults.arena(controller.ready(Objects.requireNonNull(player, "player")));
+            Player value = Objects.requireNonNull(player, "player");
+            requireAuthenticated(value);
+            Set<UUID> reservedParticipants = controller.currentMatch()
+                    .map(ArenaMatch::participants).orElse(Set.of());
+            ArenaPlayerResponse response = controller.ready(value);
+            if (response.code().equals("PRESTART_CANCELLED")) {
+                readinessPromptMatchId = null;
+                notifyParticipants(reservedParticipants, response.messagePtPt(), value.getUniqueId());
+            }
+            reconcileQueuePlayers();
+            return ModuleResults.arena(response);
+        } catch (IllegalStateException unavailable) {
+            return partyFailure(unavailable.getMessage());
         } catch (RuntimeException ignored) {
             return ModuleResults.failure();
         }
@@ -166,6 +186,7 @@ public final class ColiseumModule implements MinigameModule {
         Objects.requireNonNull(arguments, "arguments");
         if (faulted) return faultedResult();
         try {
+            requireAuthenticated(player);
             return switch (action.toLowerCase(Locale.ROOT)) {
                 case "grupo" -> group(player, arguments);
                 case "desafiar" -> challenge(player, arguments);
@@ -208,7 +229,22 @@ public final class ColiseumModule implements MinigameModule {
     public synchronized void tick(Instant now) {
         if (faulted) return;
         try {
-            controller.tick(Objects.requireNonNull(now, "now"));
+            ArenaMatch previousMatch = controller.currentMatch().orElse(null);
+            ArenaPlayerResponse response = controller.tick(Objects.requireNonNull(now, "now"));
+            if (response.code().equals("MATCH_RESERVED")) {
+                controller.currentMatch().ifPresent(match -> {
+                    sendReadinessPrompt(match);
+                });
+            }
+            if (controller.currentMatch().isEmpty()) {
+                if (previousMatch != null) {
+                    if (response.code().equals("PRESTART_CANCELLED")) {
+                        notifyParticipants(previousMatch.participants(), response.messagePtPt(), null);
+                    }
+                }
+                readinessPromptMatchId = null;
+            }
+            reconcileQueuePlayers();
         } catch (RuntimeException failure) {
             faulted = true;
             RuntimeException recoveryFailure = recoverPlayers();
@@ -228,7 +264,7 @@ public final class ColiseumModule implements MinigameModule {
 
     private RuntimeException recoverPlayers() {
         RuntimeException failure = null;
-        for (UUID playerId : List.copyOf(queuePlayers)) {
+        for (UUID playerId : List.copyOf(controller.queuedPlayerIds())) {
             Player player = player(playerId);
             if (player != null) {
                 try { controller.leave(player); }
@@ -239,17 +275,7 @@ public final class ColiseumModule implements MinigameModule {
         }
         queuePlayers.clear();
         try {
-            Set<UUID> participants = controller.currentMatch()
-                    .map(match -> Set.copyOf(match.participants())).orElse(Set.of());
-            for (UUID id : participants) {
-                Player player = player(id);
-                if (player != null) {
-                    try { controller.disconnect(player); }
-                    catch (RuntimeException current) {
-                        if (failure == null) failure = current; else failure.addSuppressed(current);
-                    }
-                }
-            }
+            controller.recoverForShutdown();
         } catch (RuntimeException current) {
             if (failure == null) failure = current; else failure.addSuppressed(current);
         }
@@ -258,6 +284,25 @@ public final class ColiseumModule implements MinigameModule {
 
     /** Typed event-routing access for the later Bukkit listener layer. */
     public ColiseumController controller() { return controller; }
+
+    /** Called through the connection-bound authentication completion recovery gate. */
+    public synchronized void resumeAfterAuthentication(Player player) {
+        Objects.requireNonNull(player, "player");
+        ArenaPlayerResponse response = controller.resumeAfterAuthentication(player);
+        boolean gameStillOwnsRestore = controller.currentMatch()
+                .filter(match -> match.snapshottedPlayers().contains(player.getUniqueId()))
+                .filter(match -> !match.restoredPlayers().contains(player.getUniqueId()))
+                .isPresent();
+        if (gameStillOwnsRestore || "AUTHENTICATION_REQUIRED".equals(response.code())) {
+            throw new com.ciaac.minecraft.minigames.paper.recovery.SessionRecoveryService.DeferredGameRecovery();
+        }
+        reconcileQueuePlayers();
+    }
+
+    /** Moves only authenticated non-participants found on the configured combat floor. */
+    public boolean relocateUnaffiliatedFloorOccupant(Player player) {
+        return controller.relocateUnaffiliatedFloorOccupant(Objects.requireNonNull(player, "player"));
+    }
 
     private static ModuleActionResult faultedResult() {
         return ModuleActionResult.rejected("MODULE_FAULTED",
@@ -308,6 +353,7 @@ public final class ColiseumModule implements MinigameModule {
     }
 
     private ModuleActionResult invite(Player leader, Player target) {
+        requireAuthenticated(target);
         if (parties.findByMember(leader.getUniqueId()).isEmpty()) {
             parties.create(leader.getUniqueId(), clock.instant());
         }
@@ -323,6 +369,7 @@ public final class ColiseumModule implements MinigameModule {
     }
 
     private ModuleActionResult acceptParty(Player target, Player leader) {
+        requireAuthenticated(leader);
         ArenaParty party = parties.accept(target.getUniqueId(), leader.getUniqueId(), clock.instant());
         notifyMembers(target, party, target.getName() + " entrou no grupo do Coliseu.");
         return ModuleActionResult.accepted("PARTY_JOINED", "Entraste no grupo de " + leader.getName() + ".");
@@ -363,9 +410,11 @@ public final class ColiseumModule implements MinigameModule {
         ArenaPlayerResponse response = controller.challenge(challenger, target, challengerRoster, targetRoster,
                 mode.format(), contract, clock.instant().plus(challengeLifetime));
         if (response.code().equals("CHALLENGE_CREATED") && response.matchId().isPresent()) {
+            Set<UUID> participants = new LinkedHashSet<>(challengerRoster.players());
+            participants.addAll(targetRoster.players());
             pendingChallenges.put(target.getUniqueId(), new PendingChallenge(
                     response.matchId().orElseThrow(), challenger.getUniqueId(),
-                    clock.instant().plus(challengeLifetime), mode.kit()));
+                    clock.instant().plus(challengeLifetime), mode.kit(), participants));
             String command = "/coliseu aceitar " + challenger.getName();
             target.sendMessage(Component.text(challenger.getName() + " desafiou-te no Coliseu. ",
                             NamedTextColor.AQUA)
@@ -391,6 +440,11 @@ public final class ColiseumModule implements MinigameModule {
                         "Esse jogador não tem um desafio pendente para ti.");
             }
         }
+        for (UUID participant : pending.participants()) {
+            Player online = player(participant);
+            if (online == null) throw new IllegalStateException("PARTY_MEMBER_OFFLINE");
+            requireAuthenticated(online);
+        }
         ArenaPlayerResponse response = controller.acceptChallenge(target, pending.challengeId(), now);
         if (response.code().equals("CHALLENGE_ACCEPTED")) {
             pendingChallenges.remove(target.getUniqueId());
@@ -398,6 +452,9 @@ public final class ColiseumModule implements MinigameModule {
                 sendStakeConfirmation(target);
                 Player challenger = player(pending.challenger());
                 if (challenger != null) sendStakeConfirmation(challenger);
+            } else {
+                controller.currentMatch().filter(match -> match.id().equals(pending.challengeId()))
+                        .ifPresent(this::sendReadinessPrompt);
             }
         }
         return ModuleResults.arena(response);
@@ -409,7 +466,16 @@ public final class ColiseumModule implements MinigameModule {
                     "Usa /coliseu aposta confirmar ou /coliseu aposta reclamar.");
         }
         return switch (arguments.getFirst().toLowerCase(Locale.ROOT)) {
-            case "confirmar" -> ModuleResults.arena(controller.consentStake(player));
+            case "confirmar" -> {
+                ArenaPlayerResponse response = controller.consentStake(player);
+                if (response.code().equals("STAKE_CONFIRMED")
+                        || response.code().equals("STAKE_ALREADY_CONFIRMED")) {
+                    controller.currentMatch().filter(match -> match.stakedEscrow()
+                                    .filter(StakedEscrow::canAdmit).isPresent())
+                            .ifPresent(this::sendReadinessPrompt);
+                }
+                yield ModuleResults.arena(response);
+            }
             case "reclamar" -> ModuleResults.arena(controller.claimStake(player));
             default -> ModuleActionResult.rejected("STAKE_ACTION_UNKNOWN",
                     "Usa /coliseu aposta confirmar ou /coliseu aposta reclamar.");
@@ -418,14 +484,62 @@ public final class ColiseumModule implements MinigameModule {
 
     private static void sendStakeConfirmation(Player player) {
         String command = "/coliseu aposta confirmar";
-        player.sendMessage(Component.text("Revê a aposta apresentada no chat. ", NamedTextColor.YELLOW)
+        safeSend(player, Component.text("Revê a aposta apresentada no chat. ", NamedTextColor.YELLOW)
                 .append(Component.text("[Confirmar aposta]", NamedTextColor.RED)
                         .clickEvent(ClickEvent.runCommand(command))
                         .hoverEvent(HoverEvent.showText(Component.text(
                                 "Aceito perder todo o equipamento apresentado", NamedTextColor.RED)))));
     }
 
+    private void sendReadinessPrompt(ArenaMatch match) {
+        if (match.kitMode() == ArenaKitMode.STAKED_SURVIVAL
+                && match.stakedEscrow().filter(StakedEscrow::canAdmit).isEmpty()) return;
+        if (match.id().equals(readinessPromptMatchId)) return;
+        readinessPromptMatchId = match.id();
+        String command = "/coliseu pronto";
+        Component prompt = Component.text("Partida reservada. Confirma quando estiveres pronto: ",
+                        NamedTextColor.YELLOW)
+                .append(Component.text("[Confirmar prontidão]", NamedTextColor.GREEN)
+                        .clickEvent(ClickEvent.runCommand(command))
+                        .hoverEvent(HoverEvent.showText(Component.text(command, NamedTextColor.AQUA))));
+        for (UUID participant : match.participants()) {
+            try {
+                Player online = player(participant);
+                if (online != null && online.isOnline() && online.isValid()) safeSend(online, prompt);
+            } catch (RuntimeException ignored) {
+                // A failed lookup or UI delivery must not alter the reserved match.
+            }
+        }
+    }
+
+    private void notifyParticipants(Set<UUID> participants, String message, UUID excludedPlayer) {
+        Component notice = Component.text(message, NamedTextColor.YELLOW);
+        for (UUID participant : participants) {
+            if (participant.equals(excludedPlayer)) continue;
+            try {
+                Player online = player(participant);
+                if (online != null && online.isOnline() && online.isValid()) safeSend(online, notice);
+            } catch (RuntimeException ignored) {
+                // Cancellation notices are informational and never gate cleanup.
+            }
+        }
+    }
+
+    private void reconcileQueuePlayers() {
+        Set<UUID> retained = new LinkedHashSet<>(controller.queuedPlayerIds());
+        controller.currentMatch().ifPresent(match -> retained.addAll(match.participants()));
+        queuePlayers.retainAll(retained);
+    }
+
+    private static void safeSend(Player player, Component message) {
+        try { player.sendMessage(message); }
+        catch (RuntimeException ignored) {
+            // UI delivery must not alter reservation, consent, or recovery state.
+        }
+    }
+
     private TeamRoster rosterLedBy(Player player) {
+        requireAuthenticated(player);
         Optional<ArenaParty> party = parties.findByMember(player.getUniqueId());
         if (party.isPresent() && !party.orElseThrow().leader().equals(player.getUniqueId())) {
             throw new IllegalStateException("PARTY_LEADER_REQUIRED");
@@ -438,8 +552,15 @@ public final class ColiseumModule implements MinigameModule {
                     || identity.connections().current(member).isEmpty()) {
                 throw new IllegalStateException("PARTY_MEMBER_OFFLINE");
             }
+            requireAuthenticated(online);
         }
         return roster;
+    }
+
+    private void requireAuthenticated(Player player) {
+        if (!player.isOnline() || !player.isValid() || !identity.requests().isAuthenticated(player)) {
+            throw new IllegalStateException("AUTHENTICATION_REQUIRED");
+        }
     }
 
     private ArenaEquipmentContract validateEquipment(
@@ -483,6 +604,10 @@ public final class ColiseumModule implements MinigameModule {
     }
 
     private static ModuleActionResult partyFailure(String code) {
+        if ("AUTHENTICATION_REQUIRED".equals(code)) {
+            return ModuleActionResult.rejected("AUTHENTICATION_REQUIRED",
+                    "Todos os jogadores envolvidos têm de concluir a autenticação da sessão atual.");
+        }
         String message = switch (code == null ? "" : code) {
             case "PLAYER_ALREADY_IN_PARTY" -> "Já pertences a um grupo do Coliseu.";
             case "PARTY_FULL" -> "O grupo já tem o máximo de três jogadores.";
@@ -535,12 +660,13 @@ public final class ColiseumModule implements MinigameModule {
     private record ArenaMode(String format, ArenaKitMode kit) { }
 
     private record PendingChallenge(UUID challengeId, UUID challenger, Instant expiresAt,
-                                    ArenaKitMode mode) {
+                                    ArenaKitMode mode, Set<UUID> participants) {
         private PendingChallenge {
             Objects.requireNonNull(challengeId, "challengeId");
             Objects.requireNonNull(challenger, "challenger");
             Objects.requireNonNull(expiresAt, "expiresAt");
             Objects.requireNonNull(mode, "mode");
+            participants = Set.copyOf(participants);
         }
     }
 }

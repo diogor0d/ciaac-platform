@@ -2,9 +2,9 @@
 
 Estado em 2026-08-24:
 
-- `SOURCE-IMPLEMENTED`: controlador Paper, domínio, isolamento de sessões e
+- `SOURCE-VERIFIED`: controlador Paper, domínio, isolamento de sessões e
   reset nativo de modelos estão presentes.
-- `RUNTIME-UNVERIFIED`: não existe validação Paper descartável nem instalação
+- `UNVERIFIED`: não existe validação Paper descartável nem instalação
   de mundo ou modelo em execução.
 
 ## Ciclo de vida
@@ -112,4 +112,4 @@ resultados.
 5. Iniciar ou reiniciar o servidor através do ciclo de vida controlado.
 
 O código não fornece coordenadas reais, comandos de instalação ou uma ferramenta
-de captura. Toda a instalação e aceitação Paper permanece `RUNTIME-UNVERIFIED`.
+de captura. Toda a instalação e aceitação Paper permanece `UNVERIFIED`.

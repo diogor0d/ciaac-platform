@@ -150,7 +150,6 @@ public final class MinigameEventRouter implements Listener {
 
     /** Runtime-owned mappings and geometry needed by event-only adapters. */
     public record Policies(
-            BoundaryPolicy coliseumFloor,
             BoundaryPolicy parkourLane,
             BoundaryPolicy archeryLane,
             PlayerScope sumoParticipants,
@@ -164,7 +163,6 @@ public final class MinigameEventRouter implements Listener {
             AnvilCellResolver anvilCells,
             AnvilHazardResolver anvilHazards) {
         public Policies {
-            Objects.requireNonNull(coliseumFloor, "coliseumFloor");
             Objects.requireNonNull(parkourLane, "parkourLane");
             Objects.requireNonNull(archeryLane, "archeryLane");
             Objects.requireNonNull(sumoParticipants, "sumoParticipants");
@@ -185,7 +183,6 @@ public final class MinigameEventRouter implements Listener {
          */
         public static Policies failClosed() {
             return new Policies(
-                    (player, destination) -> false,
                     (player, destination) -> false,
                     (player, destination) -> false,
                     player -> false,
@@ -349,8 +346,7 @@ public final class MinigameEventRouter implements Listener {
             return;
         }
 
-        routeColiseumBoundary(event, player, destination);
-        if (event.isCancelled()) return;
+        // The registered Coliseum roster boundary owns movement and controlled forfeits.
         routeSumoBoundary(event, player);
         if (event.isCancelled()) return;
         routeParkour(event, player, destination);
@@ -379,7 +375,7 @@ public final class MinigameEventRouter implements Listener {
             return;
         }
 
-        routeColiseumBoundary(event, player, destination);
+        routeColiseumTeleport(event, player);
         if (event.isCancelled()) return;
         routeSumoBoundary(event, player);
         if (event.isCancelled()) return;
@@ -725,22 +721,18 @@ public final class MinigameEventRouter implements Listener {
 
     @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = false)
     public void onKick(PlayerKickEvent event) {
-        if (!event.isCancelled()) disconnect(event.getPlayer());
+        // A later listener may still cancel a kick. The arena records departure
+        // only on the actual quit, when restoration must defer that connection.
+        if (!event.isCancelled()) disconnect(event.getPlayer(), false);
     }
 
-    private void routeColiseumBoundary(PlayerMoveEvent event, Player player, Location destination) {
+    private void routeColiseumTeleport(PlayerTeleportEvent event, Player player) {
         Optional<ArenaMatch> match = currentColiseumMatch();
         if (match.isEmpty() || match.orElseThrow().phase() != ArenaPhase.ACTIVE
                 || !match.orElseThrow().activePlayers().contains(player.getUniqueId())) return;
-        if (event instanceof PlayerTeleportEvent teleport
-                && teleport.getCause() != PlayerTeleportEvent.TeleportCause.PLUGIN) {
+        if (event.getCause() != PlayerTeleportEvent.TeleportCause.PLUGIN) {
             event.setCancelled(true);
             feedback(player, "Não podes usar teleporte externo durante o combate do Coliseu.");
-            return;
-        }
-        if (!contains(policies.coliseumFloor(), player, destination)) {
-            event.setCancelled(true);
-            feedback(player, "Não podes sair do piso do Coliseu.");
         }
     }
 
@@ -894,10 +886,6 @@ public final class MinigameEventRouter implements Listener {
 
     private void routeSumoBoundary(PlayerTeleportEvent event, Player player) {
         routeSumoBoundary((PlayerMoveEvent) event, player);
-    }
-
-    private void routeColiseumBoundary(PlayerTeleportEvent event, Player player, Location destination) {
-        routeColiseumBoundary((PlayerMoveEvent) event, player, destination);
     }
 
     private void routeParkourTeleport(PlayerTeleportEvent event, Player player, Location destination) {
@@ -1154,8 +1142,12 @@ public final class MinigameEventRouter implements Listener {
     }
 
     private void disconnect(Player player) {
+        disconnect(player, true);
+    }
+
+    private void disconnect(Player player, boolean includeArena) {
         UUID playerId = player.getUniqueId();
-        if (coliseum != null) {
+        if (includeArena && coliseum != null) {
             try {
                 Optional<ArenaMatch> match = coliseum.controller().currentMatch();
                 if (match.isPresent() && match.orElseThrow().participants().contains(playerId)) {

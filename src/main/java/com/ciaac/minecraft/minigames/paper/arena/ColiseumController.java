@@ -5,6 +5,7 @@ import com.ciaac.minecraft.minigames.arena.ArenaDisconnectDisposition;
 import com.ciaac.minecraft.minigames.arena.ArenaEquipmentContract;
 import com.ciaac.minecraft.minigames.arena.ArenaFormat;
 import com.ciaac.minecraft.minigames.arena.ArenaKitMode;
+import com.ciaac.minecraft.minigames.arena.ArenaLocationPolicy;
 import com.ciaac.minecraft.minigames.arena.ArenaMatch;
 import com.ciaac.minecraft.minigames.arena.ArenaMatchRegistry;
 import com.ciaac.minecraft.minigames.arena.ArenaPhase;
@@ -25,6 +26,9 @@ import com.ciaac.minecraft.minigames.region.RegionAdmissionToken;
 import com.ciaac.minecraft.minigames.runtime.AdmissionRequest;
 import com.ciaac.minecraft.minigames.runtime.AdmissionResult;
 import com.ciaac.minecraft.minigames.runtime.AdmissionStatus;
+import com.ciaac.minecraft.minigames.runtime.AuthenticatedSession;
+import com.ciaac.minecraft.minigames.runtime.AuthenticationRegistry;
+import com.ciaac.minecraft.minigames.runtime.ConnectionRegistry;
 import com.ciaac.minecraft.minigames.runtime.CombatPolicy;
 import com.ciaac.minecraft.minigames.runtime.CombatPolicyRegistry;
 import com.ciaac.minecraft.minigames.runtime.SessionCoordinator;
@@ -60,6 +64,7 @@ import org.bukkit.Location;
 import org.bukkit.Server;
 import org.bukkit.entity.Player;
 import org.bukkit.event.player.PlayerTeleportEvent;
+import org.bukkit.inventory.EquipmentSlot;
 import org.bukkit.inventory.ItemStack;
 
 /**
@@ -97,6 +102,11 @@ public final class ColiseumController {
     private final ArenaItemManifestBuilder manifestBuilder = new ArenaItemManifestBuilder();
     private final StakedInventoryAdapter stakedInventories = new StakedInventoryAdapter();
     private final Map<UUID, StakedInventoryPayload> stakedPayloadByPlayer = new LinkedHashMap<>();
+    private final Map<UUID, UUID> departingConnections = new HashMap<>();
+    private final AuthenticationRegistry authentication;
+    private final ConnectionRegistry connectionRegistry;
+    private RestorationPlan restorationPlan;
+    private boolean stakeFinalized;
     private Instant readyDeadline;
     private Instant stakeConsentDeadline;
     private Instant combatStartedAt;
@@ -131,6 +141,17 @@ public final class ColiseumController {
             Optional<StakedEscrowPort> escrowPort,
             Clock clock,
             StatisticsResultSink statistics) {
+        this(settings, server, sessions, connections, kits, temporaryItems, regions, admissions,
+                combatPolicies, escrowPort, clock, statistics, null, null);
+    }
+
+    public ColiseumController(
+            ColiseumSettings settings, Server server, SessionCoordinator sessions,
+            ArenaConnectionResolver connections, ArenaKitProvider kits, TemporaryItemTagger temporaryItems,
+            ProtectedRegionRegistry regions, RegionAdmissionRegistry admissions,
+            CombatPolicyRegistry combatPolicies, Optional<StakedEscrowPort> escrowPort, Clock clock,
+            StatisticsResultSink statistics, AuthenticationRegistry authentication,
+            ConnectionRegistry connectionRegistry) {
         this.settings = Objects.requireNonNull(settings, "settings");
         this.server = Objects.requireNonNull(server, "server");
         this.sessions = Objects.requireNonNull(sessions, "sessions");
@@ -143,6 +164,8 @@ public final class ColiseumController {
         this.escrowPort = Objects.requireNonNull(escrowPort, "escrowPort");
         this.clock = Objects.requireNonNull(clock, "clock");
         this.statistics = Objects.requireNonNull(statistics, "statistics");
+        this.authentication = authentication;
+        this.connectionRegistry = connectionRegistry;
         this.queue = new ArenaQueue(settings.formatPolicy());
     }
 
@@ -279,7 +302,12 @@ public final class ColiseumController {
         if (stake.canAdmit()) {
             for (UUID participant : match.participants()) {
                 Player online = server.getPlayer(participant);
-                if (online != null) online.sendMessage("§aA aposta foi confirmada por ambos. Usa /coliseu pronto.");
+                if (online != null) {
+                    try { online.sendMessage("§aA aposta foi confirmada por ambos. Usa /coliseu pronto."); }
+                    catch (RuntimeException ignored) {
+                        // Informational delivery must not change persisted stake consent.
+                    }
+                }
             }
         }
         return new ArenaPlayerResponse("STAKE_CONFIRMED",
@@ -466,6 +494,12 @@ public final class ColiseumController {
         if (match == null || !match.participants().contains(player.getUniqueId())) {
             return respond("NO_MATCH", "Não tens uma partida do Coliseu para recuperar.");
         }
+        if (!match.restoredPlayers().contains(player.getUniqueId())) {
+            departingConnections.putIfAbsent(player.getUniqueId(),
+                    connections.connectionId(player).orElse(connectionByPlayer.get(player.getUniqueId())));
+            UUID sessionId = sessionByPlayer.get(player.getUniqueId());
+            if (sessionId != null) admissions.revokeSession(sessionId);
+        }
         ArenaDisconnectDisposition disposition = match.handleDisconnect(player.getUniqueId());
         return switch (disposition) {
             case ACTIVE_FORFEIT -> match.phase() == ArenaPhase.FINISHING
@@ -477,16 +511,71 @@ public final class ColiseumController {
         };
     }
 
+    /** Called only by provider-completed authentication recovery, never by join/quit routing. */
+    public synchronized ArenaPlayerResponse resumeAfterAuthentication(Player player) {
+        Objects.requireNonNull(player, "player");
+        AuthenticatedSession evidence = authentication == null ? null
+                : authentication.current(player.getUniqueId(), clock.instant()).orElse(null);
+        if (!server.isPrimaryThread() || !player.isOnline() || !player.isValid() || evidence == null
+                || connectionRegistry == null || !connectionRegistry.isCurrent(player, evidence.connectionId())) {
+            return respond("AUTHENTICATION_REQUIRED", "Conclui primeiro a autenticação da tua sessão.");
+        }
+        ArenaMatch match = matches.current().orElse(null);
+        if (match == null || !match.participants().contains(player.getUniqueId())) {
+            return respond("NO_MATCH", "Não tens uma partida do Coliseu para recuperar.");
+        }
+        if (departingConnections.containsKey(player.getUniqueId())) {
+            if (evidence.connectionId().equals(departingConnections.get(player.getUniqueId()))) {
+                return pendingRestoration(match);
+            }
+            departingConnections.remove(player.getUniqueId());
+        }
+        return recoverCurrent("AUTHENTICATED_RECONNECT");
+    }
+
+    /** Stops the match without treating each still-connected actor as a departing connection. */
+    public synchronized ArenaPlayerResponse recoverForShutdown() {
+        return recoverCurrent("MODULE_SHUTDOWN");
+    }
+
     public synchronized ArenaStatus status() {
         Optional<ArenaMatch> current = matches.current();
         String message = !settings.enabled() ? "O Coliseu está fechado para manutenção."
                 : current.map(value -> "Coliseu: " + phasePtPt(value.phase()) + ".")
                 .orElse("O Coliseu está à procura de jogadores.");
-        return new ArenaStatus(settings.enabled(), queue.tickets().size(), current.map(ArenaMatch::phase),
+        int queuedPlayers = queue.tickets().stream()
+                .mapToInt(ticket -> ticket.partyRoster().players().size()).sum();
+        return new ArenaStatus(settings.enabled(), queuedPlayers, current.map(ArenaMatch::phase),
                 current.map(ArenaMatch::id), message);
     }
 
     public synchronized Optional<ArenaMatch> currentMatch() { return matches.current(); }
+
+    /** Exact members still waiting in queue; reserved participants remain in the match roster instead. */
+    public synchronized Set<UUID> queuedPlayerIds() { return Set.copyOf(ticketByPlayer.keySet()); }
+
+    /**
+     * Moves a safely authenticated non-participant away from the configured
+     * combat floor. A false result means Paper rejected the required teleport.
+     */
+    public synchronized boolean relocateUnaffiliatedFloorOccupant(Player player) {
+        Objects.requireNonNull(player, "player");
+        if (!server.isPrimaryThread()) return false;
+        if (!settings.enabled() || !player.isOnline() || !player.isValid()) return true;
+        UUID playerId = player.getUniqueId();
+        if (matches.current().filter(match -> match.participants().contains(playerId)).isPresent()) return true;
+        Optional<ArenaLocationPolicy> locations = settings.locations();
+        if (locations.isEmpty()) return true;
+        Optional<ProtectedRegion> currentRegion = regions.at(player.getLocation());
+        if (currentRegion.map(ProtectedRegion::id)
+                .filter(locations.orElseThrow().combatFloorRegion()::equals).isEmpty()) return true;
+        try {
+            return player.teleport(settings.spectatorFallback().orElseThrow().clone(),
+                    PlayerTeleportEvent.TeleportCause.PLUGIN);
+        } catch (RuntimeException rejected) {
+            return false;
+        }
+    }
 
     private ArenaMatch reserveProposal(QueueMatchProposal proposal, Instant now) {
         try {
@@ -535,6 +624,7 @@ public final class ColiseumController {
                 UUID snapshotId = operationId(match.id(), playerId, "SNAPSHOT");
                 UUID connectionId = connectionByPlayer.getOrDefault(playerId,
                         connections.connectionId(player).orElseThrow(() -> new IllegalStateException("AUTHENTICATION_REQUIRED")));
+                connectionByPlayer.put(playerId, connectionId);
                 AdmissionResult result = sessions.prepare(new AdmissionRequest(requestId, sessionId, snapshotId,
                         match.id(), playerId, connectionId, GameKey.ARENA, now));
                 if (result.status() != AdmissionStatus.PREPARED) throw new IllegalStateException(result.code());
@@ -557,13 +647,20 @@ public final class ColiseumController {
             }
             combatPolicies.register(combatPolicy(match));
             for (UUID playerId : match.participants()) {
-                sessions.activate(sessionByPlayer.get(playerId), operationId(match.id(), playerId, "ACTIVATE"), now);
+                sessions.activate(sessionByPlayer.get(playerId), operationId(match.id(), playerId, "ACTIVATE"), clock.instant());
             }
             match.transitionTo(ArenaPhase.ACTIVE);
-            combatStartedAt = now;
-            combatDeadline = now.plus(settings.roundDuration());
+            combatStartedAt = clock.instant();
+            combatDeadline = combatStartedAt.plus(settings.roundDuration());
+            // Entry tokens are short lived; an admitted fighter needs region access
+            // for the full active round, including native projectile validation.
+            for (UUID playerId : match.participants()) {
+                admissions.issue(new RegionAdmissionToken(UUID.randomUUID(), sessionByPlayer.get(playerId), playerId,
+                        settings.locations().orElseThrow().combatFloorRegion(), combatStartedAt, combatDeadline));
+            }
             return new ArenaPlayerResponse("COMBAT_STARTED", "O combate começou.", Optional.of(match.id()));
         } catch (RuntimeException failure) {
+            reportFailure(match, "PREPARATION_FAILED", failure);
             return recoverCurrent("PREPARATION_FAILED");
         }
     }
@@ -574,20 +671,20 @@ public final class ColiseumController {
         try {
             if (match.phase() == ArenaPhase.ACTIVE) match.transitionTo(ArenaPhase.FINISHING);
             if (match.phase() != ArenaPhase.FINISHING) return recoverCurrent(reason);
-            UUID resultId = ResultIds.forMatch(match.id());
-            match.finalizeOnce(resultId);
-            finalizeStake(match, resultId, reason, false);
+            beginRestoration(match, reason, false);
             match.transitionTo(ArenaPhase.RESTORING);
             teleportParticipantsToFallback(match);
-            restoreSessions(match, resultId, false, reason);
+            restoreSessions(match, restorationPlan.resultId(), false, restorationPlan.reason());
+            if (!match.allRestored()) return pendingRestoration(match);
             match.completeRestore();
             deliverOnlineStakeClaims(match);
-            ResultRecording recording = recordArenaResult(match, reason);
+            ResultRecording recording = recordArenaResult(match, restorationPlan.reason());
             cleanup(match);
             return recording.committed()
                     ? new ArenaPlayerResponse("RESTORED", "O teu estado survival foi restaurado.", Optional.empty())
                     : new ArenaPlayerResponse("RESTORED_UNRANKED", "O teu estado foi restaurado, mas o resultado ficou fora do ranking.", Optional.empty());
         } catch (RuntimeException failure) {
+            reportFailure(match, "RESTORE_FAILED", failure);
             return respond("RESTORE_QUARANTINED", "A recuperação precisa de revisão; a partida ficou fechada.");
         }
     }
@@ -595,26 +692,83 @@ public final class ColiseumController {
     private ArenaPlayerResponse recoverCurrent(String reason) {
         ArenaMatch match = matches.current().orElse(null);
         if (match == null) return respond("NO_MATCH", "Não há uma partida reservada.");
+        String finalReason = restorationPlan == null ? reason : restorationPlan.reason();
+        boolean intentionalPrestartEnd = switch (finalReason) {
+            case "PLAYER_LEFT", "READY_TIMEOUT", "DISCONNECT", "STAKE_CONSENT_TIMEOUT" -> true;
+            default -> false;
+        };
+        boolean cancelledBeforeCombat = intentionalPrestartEnd
+                && match.snapshottedPlayers().isEmpty() && combatStartedAt == null;
         try {
             if (match.phase() != ArenaPhase.RECOVERING) match.transitionTo(ArenaPhase.RECOVERING);
-            UUID resultId = ResultIds.forMatch(match.id());
-            match.finalizeOnce(resultId);
-            finalizeStake(match, resultId, reason, true);
+            beginRestoration(match, reason, true);
             teleportParticipantsToFallback(match);
-            restoreSessions(match, resultId, true, reason);
+            restoreSessions(match, restorationPlan.resultId(), true, restorationPlan.reason());
+            if (!match.allRestored()) return pendingRestoration(match);
             match.transitionTo(ArenaPhase.RESTORING);
             match.completeRestore();
             deliverOnlineStakeClaims(match);
-            recordNoContest(match, reason);
+            if (restorationPlan.recovery()) recordNoContest(match, restorationPlan.reason());
+            else recordArenaResult(match, restorationPlan.reason());
             cleanup(match);
+            if (cancelledBeforeCombat) {
+                String message = "READY_TIMEOUT".equals(finalReason)
+                        ? "O tempo para confirmar terminou; a partida foi cancelada antes do combate."
+                        : "A partida foi cancelada antes do combate.";
+                return respond("PRESTART_CANCELLED", message);
+            }
             return new ArenaPlayerResponse("RECOVERED", "A recuperação terminou com segurança.", Optional.empty());
         } catch (RuntimeException failure) {
+            reportFailure(match, "RECOVERY_FAILED", failure);
             return respond("RECOVERY_QUARANTINED", "A recuperação precisa de revisão; a arena permanece fechada.");
         }
     }
 
+    private record RestorationPlan(UUID resultId, String reason, boolean recovery) {}
+
+    private void beginRestoration(ArenaMatch match, String reason, boolean recovery) {
+        if (restorationPlan == null) {
+            restorationPlan = new RestorationPlan(ResultIds.forMatch(match.id()), reason, recovery);
+        }
+        match.finalizeOnce(restorationPlan.resultId());
+        if (!stakeFinalized) {
+            finalizeStake(match, restorationPlan.resultId(), restorationPlan.reason(), restorationPlan.recovery());
+            stakeFinalized = true;
+        }
+    }
+
+    private ArenaPlayerResponse pendingRestoration(ArenaMatch match) {
+        return new ArenaPlayerResponse("RECOVERY_PENDING",
+                "A recuperação aguarda a autenticação dos jogadores que saíram; a arena permanece fechada.",
+                Optional.of(match.id()));
+    }
+
+    private void reportFailure(ArenaMatch match, String code, RuntimeException failure) {
+        // Messages can contain private provider state; retain only bounded source diagnostics.
+        StringBuilder diagnostic = new StringBuilder("Falha do Coliseu [")
+                .append(code).append("] partida=").append(match.id());
+        Throwable cause = failure;
+        for (int depth = 0; cause != null && depth < 4; depth++, cause = cause.getCause()) {
+            diagnostic.append("; tipo=").append(cause.getClass().getName());
+            StackTraceElement[] frames = cause.getStackTrace();
+            for (int i = 0; i < Math.min(frames.length, 4); i++) {
+                diagnostic.append("; origem=").append(frames[i].getClassName())
+                        .append('.').append(frames[i].getMethodName()).append(':').append(frames[i].getLineNumber());
+            }
+        }
+        try { server.getLogger().warning(diagnostic.toString()); }
+        catch (RuntimeException ignored) { /* Diagnostics cannot interrupt recovery. */ }
+    }
+
     private void restoreSessions(ArenaMatch match, UUID resultId, boolean recovery, String reason) {
         for (UUID playerId : match.snapshottedPlayers()) {
+            if (match.restoredPlayers().contains(playerId) || departingConnections.containsKey(playerId)) continue;
+            Player player = server.getPlayer(playerId);
+            if (player == null || !player.isOnline() || !player.isValid()) {
+                departingConnections.putIfAbsent(playerId, connectionByPlayer.get(playerId));
+                continue;
+            }
+            if (!mayRestoreOnline(player)) continue;
             UUID sessionId = sessionByPlayer.get(playerId);
             if (sessionId == null) continue;
             AdmissionResult result = recovery
@@ -707,12 +861,16 @@ public final class ColiseumController {
             int otherStacks = stake.manifest().entrySet().stream()
                     .filter(entry -> !entry.getKey().equals(playerId))
                     .mapToInt(entry -> entry.getValue().size()).sum();
-            player.sendMessage("§6Aposta 1v1 preparada: §f" + ownStacks + " lotes teus §7contra §f"
-                    + otherStacks + " lotes do adversário§7.");
-            player.sendMessage("§eA proposta inclui inventário, armadura e mão secundária completos. "
-                    + "Itens proibidos rejeitam a proposta inteira e nada é removido.");
-            player.sendMessage("§cSó confirma se aceitares perder todo esse equipamento: "
-                    + "§f/coliseu aposta confirmar");
+            try {
+                player.sendMessage("§6Aposta 1v1 preparada: §f" + ownStacks + " lotes teus §7contra §f"
+                        + otherStacks + " lotes do adversário§7.");
+                player.sendMessage("§eA proposta inclui inventário, armadura e mão secundária completos. "
+                        + "Itens proibidos rejeitam a proposta inteira e nada é removido.");
+                player.sendMessage("§cSó confirma se aceitares perder todo esse equipamento: "
+                        + "§f/coliseu aposta confirmar");
+            } catch (RuntimeException ignored) {
+                // Informational delivery must not turn a valid reservation into recovery.
+            }
         }
     }
 
@@ -883,9 +1041,14 @@ public final class ColiseumController {
         combatDeadline = null;
         stakeConsentDeadline = null;
         stakedPayloadByPlayer.clear();
+        departingConnections.clear();
+        restorationPlan = null;
+        stakeFinalized = false;
     }
 
     private boolean markEliminated(Player player) {
+        UUID sessionId = sessionByPlayer.get(player.getUniqueId());
+        if (sessionId != null) admissions.revokeSession(sessionId);
         var maximumHealthAttribute = player.getAttribute(Attribute.MAX_HEALTH);
         if (maximumHealthAttribute == null
                 || !Double.isFinite(maximumHealthAttribute.getValue())
@@ -941,15 +1104,25 @@ public final class ColiseumController {
         }
         List<ItemStack> kit = kits.find(contract.fixedKitId()).orElseThrow(
                 () -> new IllegalStateException("FIXED_KIT_UNAVAILABLE"));
-        int size = player.getInventory().getStorageContents().length;
-        if (kit.size() > size) throw new IllegalArgumentException("Fixed kit exceeds inventory capacity");
-        ItemStack[] contents = new ItemStack[size];
-        for (int index = 0; index < kit.size(); index++) {
-            contents[index] = temporaryItems.tag(
-                    Objects.requireNonNull(kit.get(index), "kit item"), sessionId, GameKey.ARENA);
+        var layout = ArenaFixedKitLayout.arrange(kit, player.getInventory().getStorageContents().length);
+        ItemStack[] contents = new ItemStack[player.getInventory().getStorageContents().length];
+        for (int index = 0; index < layout.storage().size(); index++) {
+            contents[index] = temporaryItems.tag(layout.storage().get(index), sessionId, GameKey.ARENA);
         }
         player.getInventory().setContents(contents);
+        player.getInventory().setHelmet(tagEquipment(layout, EquipmentSlot.HEAD, sessionId));
+        player.getInventory().setChestplate(tagEquipment(layout, EquipmentSlot.CHEST, sessionId));
+        player.getInventory().setLeggings(tagEquipment(layout, EquipmentSlot.LEGS, sessionId));
+        player.getInventory().setBoots(tagEquipment(layout, EquipmentSlot.FEET, sessionId));
+        player.getInventory().setItemInOffHand(layout.offhand() == null ? null
+                : temporaryItems.tag(layout.offhand(), sessionId, GameKey.ARENA));
         player.updateInventory();
+    }
+
+    private ItemStack tagEquipment(ArenaFixedKitLayout.Layout layout,
+                                   EquipmentSlot slot, UUID sessionId) {
+        ItemStack item = layout.armor().get(slot);
+        return item == null ? null : temporaryItems.tag(item, sessionId, GameKey.ARENA);
     }
 
     private CombatPolicy combatPolicy(ArenaMatch match) {
@@ -1032,13 +1205,22 @@ public final class ColiseumController {
 
     private void teleportParticipantsToFallback(ArenaMatch match) {
         Location fallback = settings.spectatorFallback().orElseThrow().clone();
-        for (UUID playerId : match.participants()) {
+        // A queued player without a committed snapshot has no location to restore.
+        for (UUID playerId : match.snapshottedPlayers()) {
+            if (match.restoredPlayers().contains(playerId) || departingConnections.containsKey(playerId)) continue;
             Player player = server.getPlayer(playerId);
-            if (player != null && player.isOnline() && player.isValid()
+            if (player != null && mayRestoreOnline(player)
                     && !player.teleport(fallback.clone(), PlayerTeleportEvent.TeleportCause.PLUGIN)) {
                 throw new IllegalStateException("SPECTATOR_FALLBACK_REJECTED");
             }
         }
+    }
+
+    private boolean mayRestoreOnline(Player player) {
+        if (!player.isOnline() || !player.isValid()) return false;
+        if (authentication == null || connectionRegistry == null) return true;
+        AuthenticatedSession evidence = authentication.current(player.getUniqueId(), clock.instant()).orElse(null);
+        return evidence != null && connectionRegistry.isCurrent(player, evidence.connectionId());
     }
 
     private static UUID operationId(UUID matchId, UUID subject, String phase) {

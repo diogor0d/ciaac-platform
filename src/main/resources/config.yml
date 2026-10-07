@@ -28,18 +28,13 @@ progress-isolation:
 
 persistence:
   sqlite-file: platform.sqlite
+  snapshot-journal-directory: recovery
 
 # A conversa pública só pode ser emitida após aprovação explícita do aviso de
 # privacidade. Mensagens privadas e argumentos de comandos nunca são recolhidos.
 security-events:
   public-chat-enabled: false
   public-chat-privacy-notice-approved: false
-  snapshot-journal-directory: recovery
-  busy-timeout-milliseconds: 5000
-  retention:
-    snapshots-after-safe-restore-hours: 24
-    match-evidence-days: 365
-    audit-days: 180
 
 # Preparação opcional de versões assinadas. Desativada até o operador fixar o
 # repositório, artefactos e chave pública Ed25519 exatos; o plugin não aceita nem

@@ -13,6 +13,7 @@ import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
 import java.util.function.Function;
@@ -32,18 +33,26 @@ public final class SqliteRetentionRepository implements RetentionRepository {
 
     @Override
     public synchronized <T> T transaction(UUID playerId, Function<PlayerRetentionLedger, T> work) {
-        PlayerRetentionLedger ledger = ledgers.computeIfAbsent(playerId, PlayerRetentionLedger::new);
-        T result = work.apply(ledger);
+        UUID id = java.util.Objects.requireNonNull(playerId, "playerId");
+        PlayerRetentionLedger candidate = ledgers.getOrDefault(id, new PlayerRetentionLedger(id)).copy();
+        T result = java.util.Objects.requireNonNull(work, "work").apply(candidate);
         database.transaction(connection -> {
-            persist(connection, ledger);
+            persist(connection, candidate);
             return null;
         });
+        ledgers.put(id, candidate.copy());
         return result;
     }
 
     @Override
+    public synchronized Optional<PlayerRetentionLedger> findLedger(UUID playerId) {
+        return Optional.ofNullable(ledgers.get(java.util.Objects.requireNonNull(playerId, "playerId")))
+                .map(PlayerRetentionLedger::copy);
+    }
+
+    @Override
     public synchronized List<PlayerRetentionLedger> allLedgers() {
-        return List.copyOf(ledgers.values());
+        return ledgers.values().stream().map(PlayerRetentionLedger::copy).toList();
     }
 
     public LocalDate initializeScoringStart(LisbonSeasonCalendar calendar, Instant now) {
@@ -68,7 +77,12 @@ public final class SqliteRetentionRepository implements RetentionRepository {
 
     @Override
     public synchronized void purgeDetailedBefore(Instant cutoff) {
-        ledgers.values().forEach(ledger -> ledger.purgeDetailedBefore(cutoff));
+        Map<UUID, PlayerRetentionLedger> candidates = new LinkedHashMap<>();
+        ledgers.forEach((id, ledger) -> {
+            PlayerRetentionLedger candidate = ledger.copy();
+            candidate.purgeDetailedBefore(cutoff);
+            candidates.put(id, candidate);
+        });
         database.transaction(connection -> {
             try (PreparedStatement events = connection.prepareStatement(
                     "DELETE FROM mg_retention_event WHERE occurred_at < ?");
@@ -83,6 +97,8 @@ public final class SqliteRetentionRepository implements RetentionRepository {
             }
             return null;
         });
+        ledgers.clear();
+        ledgers.putAll(candidates);
     }
 
     private void loadAll(Connection connection) throws SQLException {

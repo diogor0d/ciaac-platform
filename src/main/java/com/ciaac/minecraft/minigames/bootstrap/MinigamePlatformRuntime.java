@@ -9,6 +9,7 @@ import com.ciaac.minecraft.minigames.announcement.ModuleAnnouncementMonitor;
 import com.ciaac.minecraft.minigames.command.MinigamesCommand;
 import com.ciaac.minecraft.minigames.configuration.RuntimeConfiguration;
 import com.ciaac.minecraft.minigames.configuration.RuntimeConfigurationLoader;
+import com.ciaac.minecraft.minigames.core.GameKey;
 import com.ciaac.minecraft.minigames.display.DisplayConfigLoadResult;
 import com.ciaac.minecraft.minigames.display.NativeDisplayConfigLoader;
 import com.ciaac.minecraft.minigames.isolation.IsolationPolicy;
@@ -25,6 +26,10 @@ import com.ciaac.minecraft.minigames.paper.auth.ConnectionLifecycleListener;
 import com.ciaac.minecraft.minigames.paper.auth.NLoginAuthenticationListener;
 import com.ciaac.minecraft.minigames.paper.display.NativeDisplayController;
 import com.ciaac.minecraft.minigames.paper.isolation.CompositeBukkitPlayerStateGateway;
+import com.ciaac.minecraft.minigames.paper.isolation.BuiltinExternalStateAdapters;
+import com.ciaac.minecraft.minigames.paper.isolation.ArenaProjectileLifecycleListener;
+import com.ciaac.minecraft.minigames.paper.isolation.ArenaProjectileOwnership;
+import com.ciaac.minecraft.minigames.paper.isolation.ArenaWorldStatePort;
 import com.ciaac.minecraft.minigames.paper.isolation.ExternalStateFacetHandler;
 import com.ciaac.minecraft.minigames.paper.isolation.ExternalStateFacetPort;
 import com.ciaac.minecraft.minigames.paper.isolation.FacetSnapshotHandler;
@@ -33,8 +38,11 @@ import com.ciaac.minecraft.minigames.paper.isolation.MobilityFacetHandler;
 import com.ciaac.minecraft.minigames.paper.isolation.ScoreboardCooldownFacetHandler;
 import com.ciaac.minecraft.minigames.paper.isolation.VanillaProgressFacetHandler;
 import com.ciaac.minecraft.minigames.paper.isolation.VitalsFacetHandler;
+import com.ciaac.minecraft.minigames.paper.module.ColiseumModule;
 import com.ciaac.minecraft.minigames.paper.recovery.SessionRecoveryService;
 import com.ciaac.minecraft.minigames.persistence.AuditRepository;
+import com.ciaac.minecraft.minigames.persistence.ExternalOperationJournal;
+import com.ciaac.minecraft.minigames.persistence.ArenaWorldLedger;
 import com.ciaac.minecraft.minigames.persistence.SessionRepository;
 import com.ciaac.minecraft.minigames.persistence.SqliteAnnouncementRepository;
 import com.ciaac.minecraft.minigames.persistence.SqliteAuditRepository;
@@ -50,6 +58,8 @@ import com.ciaac.minecraft.minigames.retention.RetentionConfiguration;
 import com.ciaac.minecraft.minigames.retention.RetentionConfigurationLoader;
 import com.ciaac.minecraft.minigames.retention.SqliteRetentionRepository;
 import com.ciaac.minecraft.minigames.runtime.AdmissionRequestFactory;
+import com.ciaac.minecraft.minigames.runtime.AdmissionResult;
+import com.ciaac.minecraft.minigames.runtime.AdmissionStatus;
 import com.ciaac.minecraft.minigames.runtime.AuthenticationRegistry;
 import com.ciaac.minecraft.minigames.runtime.CombatPolicyRegistry;
 import com.ciaac.minecraft.minigames.runtime.ConnectionRegistry;
@@ -73,7 +83,7 @@ import org.bukkit.OfflinePlayer;
 import org.bukkit.command.PluginCommand;
 import org.bukkit.configuration.ConfigurationSection;
 import org.bukkit.entity.Player;
-import org.bukkit.event.HandlerList;
+import net.kyori.adventure.text.Component;
 import org.bukkit.plugin.RegisteredServiceProvider;
 import org.bukkit.scheduler.BukkitTask;
 
@@ -84,6 +94,9 @@ public final class MinigamePlatformRuntime implements AutoCloseable {
             "parkour", "arco", "bigornas", "cores", "elytra");
     private final CiaacPlatformPlugin plugin;
     private final SqliteDatabase database;
+    private final ExternalOperationJournal externalJournal;
+    private final ArenaWorldLedger arenaWorldLedger;
+    private final ArenaProjectileLifecycleListener arenaProjectiles;
     private final MinigameModuleRegistry modules;
     private final NativeDisplayController displays;
     private final BukkitTask heartbeat;
@@ -96,6 +109,9 @@ public final class MinigamePlatformRuntime implements AutoCloseable {
     private MinigamePlatformRuntime(
             CiaacPlatformPlugin plugin,
             SqliteDatabase database,
+            ExternalOperationJournal externalJournal,
+            ArenaWorldLedger arenaWorldLedger,
+            ArenaProjectileLifecycleListener arenaProjectiles,
             MinigameModuleRegistry modules,
             NativeDisplayController displays,
             BukkitTask heartbeat,
@@ -105,6 +121,9 @@ public final class MinigamePlatformRuntime implements AutoCloseable {
             Clock clock) {
         this.plugin = plugin;
         this.database = database;
+        this.externalJournal = externalJournal;
+        this.arenaWorldLedger = arenaWorldLedger;
+        this.arenaProjectiles = arenaProjectiles;
         this.modules = modules;
         this.displays = displays;
         this.heartbeat = heartbeat;
@@ -126,11 +145,15 @@ public final class MinigamePlatformRuntime implements AutoCloseable {
         NativeDisplayController displays = null;
         BukkitTask heartbeat = null;
         PassportPaperRuntime passportRuntime = null;
+        ExternalOperationJournal externalJournal = null;
+        ArenaWorldLedger arenaWorldLedger = null;
+        ArenaProjectileLifecycleListener arenaProjectiles = null;
         try {
         SnapshotEnvelopeCodec snapshotCodec = new SnapshotEnvelopeCodec();
         SessionRepository sessionRepository = new SqliteSessionRepository(database);
         var snapshotRepository = new SqliteSnapshotRepository(database, snapshotCodec);
         AuditRepository audit = new SqliteAuditRepository(database);
+        externalJournal = new ExternalOperationJournal(plugin.getDataFolder().toPath().resolve("external-state"));
         StatisticsRepository statistics = new SqliteStatisticsRepository(database);
         var announcementRepository = new SqliteAnnouncementRepository(database);
 
@@ -157,11 +180,30 @@ public final class MinigamePlatformRuntime implements AutoCloseable {
                 claimed.addAll(handler.facets());
             }
         }
+        for (ExternalStateFacetPort port : BuiltinExternalStateAdapters.create(plugin, externalJournal, audit)) {
+            ExternalStateFacetHandler handler = new ExternalStateFacetHandler(port);
+            if (!java.util.Collections.disjoint(claimed, handler.facets())) continue;
+            handlers.add(handler);
+            claimed.addAll(handler.facets());
+        }
+        ArenaWorldStatePort arenaWorld = null;
+        ArenaProjectileOwnership ownedProjectiles = null;
+        if (!claimed.contains(PlayerStateFacet.TEMPORARY_WORLD_BLOCKS_AND_ENTITIES)) {
+            if (ArenaWorldStatePort.nativeBuildMatches()) {
+                arenaWorldLedger = new ArenaWorldLedger(plugin.getDataFolder().toPath().resolve("arena-world"));
+                ownedProjectiles = new ArenaProjectileOwnership(plugin, arenaWorldLedger);
+                arenaWorld = new ArenaWorldStatePort(plugin.getServer(), regions, arenaWorldLedger,
+                        ownedProjectiles, externalJournal, audit);
+                handlers.add(new ExternalStateFacetHandler(arenaWorld));
+                claimed.addAll(arenaWorld.facets());
+            } else plugin.getLogger().warning(
+                    "O isolamento de mundo da Arena ficou fechado: exige o build Paper 26.2-84-26e81c4 verificado.");
+        }
         CompositeBukkitPlayerStateGateway stateGateway =
-                new CompositeBukkitPlayerStateGateway(plugin.getServer(), handlers);
+                new CompositeBukkitPlayerStateGateway(plugin.getServer(), handlers, authentication, connections, clock);
         SessionCoordinator coordinator = new SessionCoordinator(
                 authentication, sessions, sessionRepository, snapshotRepository, stateGateway,
-                isolation, snapshotCodec, clock);
+                isolation, snapshotCodec, clock, plugin.getLogger()::warning);
 
         var minecraftAnnouncements = new AnnouncementService(
                 announcementRepository,
@@ -181,18 +223,36 @@ public final class MinigamePlatformRuntime implements AutoCloseable {
                 configuration.announcements().announceWinner(),
                 clock,
                 id -> playerName(plugin, id));
+        var facetsByGame = new java.util.EnumMap<GameKey, Set<PlayerStateFacet>>(GameKey.class);
+        for (GameKey game : GameKey.values()) facetsByGame.put(game, stateGateway.supportedFacets(game));
         PlatformServices services = new PlatformServices(
                 plugin, configuration, clock, database, authentication, connections,
-                new AdmissionRequestFactory(connections, clock), sessions, coordinator, regions,
+                new AdmissionRequestFactory(connections, authentication, clock), sessions, coordinator, regions,
                 regionAdmissions, combatPolicies, temporaryItems, statistics, audit,
-                announcementDispatcher, isolation, stateGateway.supportedFacets());
+                announcementDispatcher, isolation, facetsByGame);
 
         AtomicReference<MinigameModuleRegistry> moduleReference = new AtomicReference<>(
                 MinigameModuleRegistry.allUnavailable("A plataforma ainda está a iniciar."));
         SessionRecoveryService recovery = new SessionRecoveryService(
-                sessionRepository, sessions, coordinator, audit, clock,
-                session -> moduleReference.get().get(session.game()).shutdown());
+                sessionRepository, sessions, coordinator, audit, authentication, connections, clock,
+                session -> {
+                    var module = moduleReference.get().get(session.game());
+                    if (module instanceof ColiseumModule arena) {
+                        Player player = plugin.getServer().getPlayer(session.playerId());
+                        if (player != null) arena.resumeAfterAuthentication(player);
+                    } else {
+                        module.shutdown();
+                    }
+                });
         recovery.loadBlockingSessions();
+        registerCoreListeners(plugin, authentication, connections, sessions, combatPolicies,
+                temporaryItems, regions, regionAdmissions, recovery, clock);
+        if (arenaWorld != null) {
+            arenaProjectiles = new ArenaProjectileLifecycleListener(plugin, arenaWorldLedger, ownedProjectiles,
+                    arenaWorld, sessions, authentication, connections, regions, regionAdmissions, recovery, clock);
+            plugin.getServer().getPluginManager().registerEvents(arenaProjectiles, plugin);
+            arenaWorld.lifecycleReady();
+        }
         assembledModules = Objects.requireNonNull(assembler.assemble(services), "modules");
         MinigameModuleRegistry readyModules = assembledModules;
         moduleReference.set(readyModules);
@@ -221,8 +281,6 @@ public final class MinigamePlatformRuntime implements AutoCloseable {
         passportRuntime = new PassportPaperRuntime(plugin, passportService, authentication, connections, sessions, clock);
         PassportPaperRuntime readyPassport = passportRuntime;
 
-        registerCoreListeners(plugin, authentication, connections, sessions, combatPolicies,
-                temporaryItems, regions, regionAdmissions, recovery, clock);
         boolean chatEvents = plugin.getConfig().getBoolean("security-events.public-chat-enabled", false);
         boolean privacyApproved = plugin.getConfig().getBoolean(
                 "security-events.public-chat-privacy-notice-approved", false);
@@ -230,7 +288,7 @@ public final class MinigamePlatformRuntime implements AutoCloseable {
                 new AuthenticatedPublicChatListener(plugin, authentication, clock), plugin);
         else if (chatEvents) plugin.getLogger().warning(
                 "Os eventos de conversa pública ficaram fechados porque o aviso de privacidade não foi aprovado.");
-        registerNLogin(plugin, connections, authentication, player -> {
+        registerAuthentication(plugin, connections, authentication, player -> {
             Instant authenticatedAt = clock.instant();
             authentication.current(player.getUniqueId(), authenticatedAt).ifPresent(auth -> plugin.emit(
                     SecurityEvent.authenticatedPlayer(authenticatedAt, player.getUniqueId(), player.getName(),
@@ -243,6 +301,18 @@ public final class MinigamePlatformRuntime implements AutoCloseable {
                                 recoveryResult.status() == com.ciaac.minecraft.minigames.runtime.AdmissionStatus.QUARANTINED
                                         ? SecurityEvent.Severity.HIGH : SecurityEvent.Severity.MEDIUM,
                                 recoveryResult.code().replaceAll("[^A-Z0-9_.-]", "_"))));
+            }
+            if (mayRelocateArenaOccupant(recoveryResult, sessions, player.getUniqueId())
+                    && readyModules.get(GameKey.ARENA) instanceof ColiseumModule arena
+                    && !arena.relocateUnaffiliatedFloorOccupant(player)) {
+                plugin.getLogger().severe("ARENA_AUTHENTICATED_EVICTION_FAILED");
+                try {
+                    player.kick(Component.text(
+                            "Não foi possível sair da arena com segurança. Volta a entrar mais tarde."));
+                } catch (RuntimeException kickFailure) {
+                    plugin.getLogger().severe("ARENA_AUTHENTICATED_EVICTION_DISCONNECT_FAILED");
+                }
+                return;
             }
             readyPassport.onAuthenticated(player);
         }, clock);
@@ -277,14 +347,18 @@ public final class MinigamePlatformRuntime implements AutoCloseable {
         }, 1L, 1L), "heartbeat task");
         registerCommands(plugin, readyModules, statistics, clock);
         MinigamePlatformRuntime result = new MinigamePlatformRuntime(
-                plugin, database, readyModules, displays, heartbeat, passportRuntime,
+                plugin, database, externalJournal, arenaWorldLedger, arenaProjectiles, readyModules, displays, heartbeat, passportRuntime,
                 authentication, connections, clock);
         runtime.set(result);
-        logIsolationReadiness(plugin, stateGateway.supportedFacets());
+        logIsolationReadiness(plugin, stateGateway);
         return result;
         } catch (RuntimeException | LinkageError failure) {
-            if (passportRuntime != null) passportRuntime.close();
-            cleanupFailedStart(plugin, assembledModules, displays, heartbeat, database, failure);
+            if (passportRuntime != null) {
+                try { passportRuntime.close(); }
+                catch (RuntimeException closeFailure) { failure.addSuppressed(closeFailure); }
+            }
+            cleanupFailedStart(plugin, assembledModules, displays, heartbeat, database, externalJournal,
+                    arenaWorldLedger, arenaProjectiles, failure);
             throw failure;
         }
     }
@@ -328,6 +402,26 @@ public final class MinigamePlatformRuntime implements AutoCloseable {
             if (firstFailure == null) firstFailure = failure;
             else firstFailure.addSuppressed(failure);
         }
+        if (arenaProjectiles != null) {
+            try { arenaProjectiles.close(); }
+            catch (RuntimeException failure) {
+                if (firstFailure == null) firstFailure = failure;
+                else firstFailure.addSuppressed(failure);
+            }
+        }
+        if (arenaWorldLedger != null) {
+            try { arenaWorldLedger.close(); }
+            catch (RuntimeException failure) {
+                if (firstFailure == null) firstFailure = failure;
+                else firstFailure.addSuppressed(failure);
+            }
+        }
+        try {
+            externalJournal.close();
+        } catch (RuntimeException failure) {
+            if (firstFailure == null) firstFailure = failure;
+            else firstFailure.addSuppressed(failure);
+        }
         try {
             database.close();
         } catch (RuntimeException failure) {
@@ -343,6 +437,9 @@ public final class MinigamePlatformRuntime implements AutoCloseable {
             NativeDisplayController displays,
             BukkitTask heartbeat,
             SqliteDatabase database,
+            ExternalOperationJournal externalJournal,
+            ArenaWorldLedger arenaWorldLedger,
+            ArenaProjectileLifecycleListener arenaProjectiles,
             Throwable original) {
         if (heartbeat != null) {
             try { heartbeat.cancel(); }
@@ -359,11 +456,23 @@ public final class MinigamePlatformRuntime implements AutoCloseable {
             catch (RuntimeException failure) { original.addSuppressed(failure); }
         }
         try {
-            HandlerList.unregisterAll(plugin);
+            plugin.unregisterRuntimeListeners();
         } catch (RuntimeException failure) {
             original.addSuppressed(failure);
         }
         disableCommands(plugin, original);
+        if (arenaProjectiles != null) {
+            try { arenaProjectiles.close(); }
+            catch (RuntimeException closeFailure) { original.addSuppressed(closeFailure); }
+        }
+        if (arenaWorldLedger != null) {
+            try { arenaWorldLedger.close(); }
+            catch (RuntimeException closeFailure) { original.addSuppressed(closeFailure); }
+        }
+        if (externalJournal != null) {
+            try { externalJournal.close(); }
+            catch (RuntimeException closeFailure) { original.addSuppressed(closeFailure); }
+        }
         try {
             database.close();
         } catch (RuntimeException closeFailure) {
@@ -411,21 +520,33 @@ public final class MinigamePlatformRuntime implements AutoCloseable {
         var manager = plugin.getServer().getPluginManager();
         manager.registerEvents(new ConnectionLifecycleListener(connections, authentication, clock), plugin);
         manager.registerEvents(new SessionIsolationListener(
-                sessions, authentication, combatPolicies, temporaryItems, recovery), plugin);
+                plugin, sessions, authentication, combatPolicies, temporaryItems, recovery), plugin);
         manager.registerEvents(new ProgressSuppressionListener(sessions), plugin);
         manager.registerEvents(new RegionProtectionListener(
                 regions, regionAdmissions, sessions, recovery, clock), plugin);
         for (Player player : plugin.getServer().getOnlinePlayers()) connections.begin(player, clock.instant());
     }
 
-    private static void registerNLogin(
+    private static void registerAuthentication(
             CiaacPlatformPlugin plugin,
             ConnectionRegistry connections,
             AuthenticationRegistry authentication,
             java.util.function.Consumer<Player> authenticatedHook,
             Clock clock) {
-        if (!plugin.getServer().getPluginManager().isPluginEnabled("nLogin")) {
-            plugin.getLogger().warning("O nLogin não está disponível; todas as admissões aos minijogos permanecem fechadas.");
+        var manager = plugin.getServer().getPluginManager();
+        boolean nLogin = manager.isPluginEnabled("nLogin");
+        boolean authMe = manager.isPluginEnabled("AuthMe");
+        if (nLogin && authMe) {
+            plugin.getLogger().severe("AUTHENTICATION_PROVIDERS_AMBIGUOUS: admissão e recuperação permanecem fechadas.");
+            return;
+        }
+        if (authMe) {
+            com.ciaac.minecraft.minigames.paper.auth.AuthMeCompletionBinding.register(
+                    plugin, manager.getPlugin("AuthMe"), connections, authentication, clock, authenticatedHook);
+            return;
+        }
+        if (!nLogin) {
+            plugin.getLogger().warning("Nenhum fornecedor de autenticação suportado está disponível; as admissões permanecem fechadas.");
             return;
         }
         try {
@@ -433,9 +554,22 @@ public final class MinigamePlatformRuntime implements AutoCloseable {
                     new NLoginAuthenticationListener(
                             plugin, connections, authentication, clock, Duration.ofHours(24),
                             authenticatedHook), plugin);
+            plugin.getLogger().severe("NLOGIN_STATE_COMPLETION_UNAVAILABLE: a integração nLogin não dispõe de prova "
+                    + "de conclusão do restauro. A admissão, o Passaporte e a recuperação autenticada permanecem fechados; "
+                    + "as sessões pendentes e os snapshots são preservados.");
         } catch (LinkageError failure) {
             plugin.getLogger().severe("A API do nLogin é incompatível; todas as admissões aos minijogos permanecem fechadas.");
         }
+    }
+
+    static boolean mayRelocateArenaOccupant(
+            AdmissionResult recoveryResult, SessionRegistry sessions, java.util.UUID playerId) {
+        Objects.requireNonNull(recoveryResult, "recoveryResult");
+        Objects.requireNonNull(sessions, "sessions");
+        Objects.requireNonNull(playerId, "playerId");
+        boolean recoverySafe = "NO_RECOVERY_PENDING".equals(recoveryResult.code())
+                || recoveryResult.status() == AdmissionStatus.RECOVERED;
+        return recoverySafe && sessions.findByPlayer(playerId).isEmpty();
     }
 
     private static void registerCommands(
@@ -475,12 +609,14 @@ public final class MinigamePlatformRuntime implements AutoCloseable {
     }
 
     private static void logIsolationReadiness(
-            CiaacPlatformPlugin plugin, Set<PlayerStateFacet> supported) {
-        EnumSet<PlayerStateFacet> missing = EnumSet.allOf(PlayerStateFacet.class);
-        missing.removeAll(supported);
-        if (!missing.isEmpty()) {
-            plugin.getLogger().warning("O isolamento rigoroso de progresso está incompleto; a admissão está fechada. Em falta: "
-                    + missing);
+            CiaacPlatformPlugin plugin, CompositeBukkitPlayerStateGateway gateway) {
+        Map<Set<PlayerStateFacet>, List<String>> missingByGames = new LinkedHashMap<>();
+        for (GameKey game : GameKey.values()) {
+            EnumSet<PlayerStateFacet> missing = EnumSet.allOf(PlayerStateFacet.class);
+            missing.removeAll(gateway.supportedFacets(game));
+            if (!missing.isEmpty()) missingByGames.computeIfAbsent(Set.copyOf(missing), ignored -> new ArrayList<>()).add(game.id());
         }
+        missingByGames.forEach((missing, games) -> plugin.getLogger().warning(
+                "O isolamento rigoroso está incompleto para " + games + "; a admissão desses jogos está fechada. Em falta: " + missing));
     }
 }

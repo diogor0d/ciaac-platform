@@ -168,7 +168,7 @@ public final class HotPotatoPaperController {
             Participant queued = participants.get(playerId); if (queued == null || !queued.player().isOnline() || !queued.player().isValid()) throw new IllegalStateException("PLAYER_OFFLINE");
             AdmissionResult prepared = sessions.prepare(queued.request()); if (prepared.status() != AdmissionStatus.PREPARED) throw new IllegalStateException(prepared.code());
             PlayerSession session = prepared.session().orElseThrow(); Instant expires = now.plus(settings.tokenLifetime()); admissions.issue(new RegionAdmissionToken(UUID.randomUUID(), session.sessionId(), playerId, settings.participantRegionId(), now, expires));
-            teleport(queued.player(), settings.spawns().get(index++)); queued.player().getInventory().setItemInMainHand(items.tag(new ItemStack(Material.POTATO), session.sessionId(), GameKey.HOT_POTATO)); sessions.activate(session.sessionId(), OperationIds.derive(queued.request().requestId(), "GAME_ACTIVE"), now); participants.put(playerId, new Participant(queued.request(), queued.player(), session.sessionId()));
+            teleport(queued.player(), settings.spawns().get(index++)); queued.player().getInventory().setItemInMainHand(items.tag(new ItemStack(Material.POTATO), session.sessionId(), GameKey.HOT_POTATO)); sessions.activate(session.sessionId(), OperationIds.derive(queued.request().requestId(), "GAME_ACTIVE"), clock.instant()); participants.put(playerId, new Participant(queued.request(), queued.player(), session.sessionId()));
         }
         game.start(now, nextOperation()); startedAt = now; phaseDeadline = null;
         refreshCarrierPresentation(now, true);

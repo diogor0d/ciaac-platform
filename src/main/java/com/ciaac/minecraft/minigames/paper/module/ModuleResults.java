@@ -23,7 +23,7 @@ final class ModuleResults {
         String code = result.code();
         boolean accepted = switch (code) {
             case "QUEUED", "LEFT_QUEUE", "READY_RECORDED", "COMBAT_STARTED",
-                    "RESTORED", "RESTORED_UNRANKED", "CHALLENGE_CREATED",
+                    "RESTORED", "RESTORED_UNRANKED", "PRESTART_CANCELLED", "CHALLENGE_CREATED",
                     "CHALLENGE_ACCEPTED", "STAKE_CONFIRMED", "STAKE_ALREADY_CONFIRMED",
                     "STAKE_CLAIMS_DELIVERED", "STAKE_NO_CLAIMS" -> true;
             default -> false;

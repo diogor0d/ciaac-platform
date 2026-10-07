@@ -126,15 +126,12 @@ public final class ConfiguredModuleAssembler implements ModuleAssembler {
             return MinigameModuleRegistry.allUnavailable(
                     "Entradas fechadas pela configuração global dos minijogos.");
         }
-        if (!services.isolationReady()) {
-            return MinigameModuleRegistry.allUnavailable(
-                    "Entradas fechadas: o isolamento total da progressão survival ainda não está disponível.");
-        }
-
         EnumMap<GameKey, List<ProtectedRegion>> regionPlans = new EnumMap<>(GameKey.class);
         for (GameKey game : GameKey.values()) {
             ResolvedModuleConfiguration module = resolved.module(game).orElseThrow();
-            if (module.admissionAllowed()) regionPlans.put(game, plannedRegions(module));
+            if (module.admissionAllowed() && services.isolationReady(game)) {
+                regionPlans.put(game, plannedRegions(module));
+            }
         }
         Set<GameKey> geometryConflicts = conflictingGames(regionPlans);
         geometryConflicts.forEach(game -> services.plugin().getLogger().severe(
@@ -161,6 +158,13 @@ public final class ConfiguredModuleAssembler implements ModuleAssembler {
                 modules.add(unavailable(game, module.enabled()
                         ? "Configuração incompleta; consulta os diagnósticos do servidor."
                         : "Este minijogo está fechado pelo operador."));
+                continue;
+            }
+            if (!services.isolationReady(game)) {
+                services.plugin().getLogger().warning(
+                        "Minigame " + game.id() + " fechado: faltam facetas de isolamento para este jogo.");
+                modules.add(unavailable(game,
+                        "Este minijogo está fechado porque o isolamento da progressão não está disponível."));
                 continue;
             }
             if (geometryConflicts.contains(game)) {
@@ -272,7 +276,9 @@ public final class ConfiguredModuleAssembler implements ModuleAssembler {
                 services.combatPolicies(),
                 escrow,
                 services.clock(),
-                statistics);
+                statistics,
+                services.authentication(),
+                services.connections());
         String defaultKit = kits.keySet().stream().sorted().findFirst().orElse(null);
         ArenaItemManifestBuilder manifests = new ArenaItemManifestBuilder();
         ColiseumEquipmentPort equipment = (player, mode) -> switch (mode) {
