@@ -35,6 +35,7 @@ import com.ciaac.minecraft.minigames.paper.isolation.ExternalStateFacetPort;
 import com.ciaac.minecraft.minigames.paper.isolation.FacetSnapshotHandler;
 import com.ciaac.minecraft.minigames.paper.isolation.InventoryFacetHandler;
 import com.ciaac.minecraft.minigames.paper.isolation.MobilityFacetHandler;
+import com.ciaac.minecraft.minigames.paper.isolation.MultiverseInventoryIsolationBinding;
 import com.ciaac.minecraft.minigames.paper.isolation.ScoreboardCooldownFacetHandler;
 import com.ciaac.minecraft.minigames.paper.isolation.VanillaProgressFacetHandler;
 import com.ciaac.minecraft.minigames.paper.isolation.VitalsFacetHandler;
@@ -165,7 +166,8 @@ public final class MinigamePlatformRuntime implements AutoCloseable {
         CombatPolicyRegistry combatPolicies = new CombatPolicyRegistry();
         TemporaryItemTagger temporaryItems = new TemporaryItemTagger(plugin);
         IsolationPolicy isolation = IsolationPolicy.strictNoProgress();
-        List<FacetSnapshotHandler> handlers = baseHandlers(plugin);
+        var inventorySharing = MultiverseInventoryIsolationBinding.register(plugin, sessions);
+        List<FacetSnapshotHandler> handlers = baseHandlers(plugin, inventorySharing::preflight);
         Set<PlayerStateFacet> claimed = EnumSet.noneOf(PlayerStateFacet.class);
         handlers.forEach(handler -> claimed.addAll(handler.facets()));
         for (RegisteredServiceProvider<ExternalStateFacetPort> registration
@@ -496,11 +498,11 @@ public final class MinigamePlatformRuntime implements AutoCloseable {
         }
     }
 
-    private static List<FacetSnapshotHandler> baseHandlers(CiaacPlatformPlugin plugin) {
+    private static List<FacetSnapshotHandler> baseHandlers(CiaacPlatformPlugin plugin, Runnable sharingPreflight) {
         List<FacetSnapshotHandler> handlers = new ArrayList<>();
         handlers.add(new InventoryFacetHandler());
         handlers.add(new VitalsFacetHandler());
-        handlers.add(new MobilityFacetHandler(plugin.getServer()));
+        handlers.add(new MobilityFacetHandler(plugin.getServer(), sharingPreflight));
         handlers.add(new VanillaProgressFacetHandler(plugin.getServer()));
         handlers.add(new ScoreboardCooldownFacetHandler(plugin.getServer()));
         return handlers;

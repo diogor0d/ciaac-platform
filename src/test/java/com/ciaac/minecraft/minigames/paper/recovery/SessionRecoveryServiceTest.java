@@ -85,6 +85,34 @@ class SessionRecoveryServiceTest {
     }
 
     @Test
+    void hydratedActiveSumoSessionRecoversAfterAuthentication() {
+        SessionRegistry registry = new SessionRegistry();
+        PlayerSession hydrated = activeSession(GameKey.KNOCKBACK_SUMO);
+        AuthContext auth = authenticatedPlayer(hydrated.playerId(), START.plusSeconds(10));
+        List<AuditEvent> audits = new ArrayList<>();
+        AtomicInteger stopCalls = new AtomicInteger();
+        SessionRepository persisted = proxy(SessionRepository.class, (method, args) ->
+                method.getName().equals("nonTerminal") ? List.of(hydrated) : null);
+        SessionRecoveryService service = new SessionRecoveryService(
+                persisted, registry, coordinator(registry), audits::add,
+                auth.authentication, auth.connections, Clock.fixed(START.plusSeconds(10), ZoneOffset.UTC),
+                session -> {
+                    stopCalls.incrementAndGet();
+                    closeAndRelease(session, registry);
+                });
+
+        assertEquals(List.of(hydrated), service.loadBlockingSessions());
+        var result = service.onAuthenticated(auth.player);
+
+        assertEquals(AdmissionStatus.RECOVERED, result.status());
+        assertEquals("RESTORED", result.code());
+        assertEquals(GameKey.KNOCKBACK_SUMO, hydrated.game());
+        assertEquals(1, stopCalls.get());
+        assertTrue(registry.findById(hydrated.sessionId()).isEmpty());
+        assertEquals("RESTORED", audits.getLast().outcomeCode());
+    }
+
+    @Test
     void violationRecoveryDoesNotRecoverAgainAfterStopCallbackClosedSessionAndRegisteredNewerIdentity() {
         SessionRegistry registry = new SessionRegistry();
         PlayerSession original = activeSession();
@@ -261,8 +289,12 @@ class SessionRecoveryServiceTest {
     }
 
     private static PlayerSession activeSession() {
+        return activeSession(GameKey.ARENA);
+    }
+
+    private static PlayerSession activeSession(GameKey game) {
         PlayerSession session = new PlayerSession(
-                UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID(), GameKey.ARENA, START);
+                UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID(), game, START);
         session.transition(UUID.randomUUID(), SessionPhase.REQUESTED, SessionPhase.SNAPSHOTTING,
                 START.plusSeconds(1), "TEST");
         session.transition(UUID.randomUUID(), SessionPhase.SNAPSHOTTING, SessionPhase.SNAPSHOT_COMMITTED,

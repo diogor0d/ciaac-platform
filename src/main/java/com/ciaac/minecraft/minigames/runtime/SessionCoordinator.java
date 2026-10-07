@@ -163,6 +163,11 @@ public final class SessionCoordinator {
         }
     }
 
+    /** Current live session state; closed sessions have already been released. */
+    public synchronized Optional<PlayerSession> findSession(UUID sessionId) {
+        return sessions.findById(Objects.requireNonNull(sessionId, "sessionId"));
+    }
+
     public synchronized boolean activate(UUID sessionId, UUID operationId, Instant occurredAt) {
         PlayerSession session = requireSession(sessionId);
         boolean changed = session.transition(

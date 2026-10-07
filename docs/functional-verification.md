@@ -1196,3 +1196,54 @@ O caso sintético no JAR anterior com `RESTORE_FAILED` permanece histórico; nã
 apagar a respetiva quarentena. Detalhes de operação estão em
 [ativação da Arena](arena-activation.md). Os resumos locais do fixture são
 históricos e não substituem a aceitação pública subsequente.
+
+
+## Sumo e Batata Quente — 2026-10-07
+
+`RUNTIME-VERIFIED` apenas no fixture privado e descartável de loopback, com
+Paper 26.2 build 84 (`26e81c4`), AuthMe 6.0.1-b2770, Multiverse-Inventories
+5.3.5 e GrimAC/PacketEvents ativos. Não se copiaram mundos, contas ou dados
+reais. Produção e os restantes seis minijogos não são aceites por este ensaio.
+JAR instalado/testado: SHA-256
+`c69e2c7e6116c28a26bbb3add7cb9dc944c7ca2d6b4c2320c28beea7936d9cfa`.
+
+- Build completo: 478 testes; 477 passaram, um skip preexistente, sem falhas/erros.
+- Ferramenta separada: 56 checks offline; não ampliam a aceitação do plugin.
+- Sumo: entrada dos dois peers, equipamento temporário e teleports; input normal
+  cruza a fronteira e duas saídas de ronda produzem VICTORY/RING_OUT numa série
+  de três; ataques nativos produzem vitória por repulsão sem dano; timeout dá
+  DRAW/ROUND_TIMEOUT; quit gera NO_CONTEST e recuperação após login normal.
+- Batata Quente: countdown/saída, três teleports para mundo dedicado, clique
+  nativo com passe, cooldown rejeitado, passe de regresso, pavio/SPECTATOR,
+  VICTORY/FUSE, quit/reauth e remoção da fila por desconexão.
+- Crash de ambos: estado nativo gravado, término forçado só do subprocesso
+  próprio, reinício com sessões ACTIVE duráveis e login AuthMe com a mesma
+  password. Restauro confirmado antes de admitir a participação seguinte.
+- Cada restauro compara exatamente 18 campos NBT autoritativos: Inventory,
+  EnderItems, equipment (armadura/offhand), três campos XP, modo, slot,
+  Health, três campos hunger, abilities, Pos, Rotation, Dimension e dois campos
+  UUID do mundo. Itens, equipamento danificado e XP originais foram preservados;
+  sessões/snapshots acabaram CLOSED/RESTORED.
+
+A correção Multiverse cancela leitura/escrita de perfis apenas durante
+isolamento/recuperação. Não desativa inventários por mundo. O guard opcional
+fecha preflights se perder/trocar o fornecedor ou observar bytes/versão não
+revistos. A versão 5.3.5 e as classes críticas estão pinadas: um upgrade exige
+nova revisão, não apenas um smoke test de startup.
+
+[acceptance.py](../tools/arena-client-fixture/acceptance.py) mantém os cenários
+repetíveis e exige alvo fixo, digest, EULA prévia, porta livre e armazenamento
+privado. Passwords/NBT/logs/bases de dados ficam fora de Git. O modelo de piso
+infinito não implementa física/colisão completa de vanilla. Obstáculos reais,
+linha de visão, bancadas/público, física completa e TAB/DiscordSRV mantêm
+aceitação separada. A
+[preparação das instalações](sumo-hot-potato-deployment.md) define os requisitos
+para construção e ativação futura; este resultado não ativa produção.
+
+O primeiro ringue sintético usou X/Z=0..8; o ensaio de vitória por knockback
+usou uma fronteira simétrica X=2..6, Z=0..8, com os mesmos spawns 3,5 e 5,5 e
+piso Y=80. Os limites são blocos inclusivos: max-X=6 inclui x inferior a 7.
+A geometria foi alterada apenas depois de drenar todas as sessões. Não se
+apagaram snapshots nem se mudou a configuração durante uma recuperação pendente.
+A posição autoritativa é também verificada em cada tick de Sumo; o teste de
+regressão cobre alteração sem PlayerMoveEvent e world mismatch sem prémio.

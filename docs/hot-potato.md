@@ -1,23 +1,28 @@
 # Batata Quente
 
-Estado em 2026-08-24:
+Estado em 2026-10-07:
 
-- `SOURCE-VERIFIED`: domínio, controlador Paper, regras de passe e
-  recuperação de sessão estão presentes.
-- `UNVERIFIED`: não existe validação Paper descartável nem execução
-  real da arena.
+- `RUNTIME-VERIFIED` num Paper descartável com três clientes autenticados:
+  fila/countdown, teleports para mundo dedicado, passe nativo e passe de
+  regresso, rejeição durante cooldown, eliminação pelo pavio, vitória,
+  desconexão/reauth e restauro exato dos 18 campos observados.
+- A recuperação de crash tem evidência separada. As instalações de produção,
+  física de cliente vanilla e integrações externas ainda exigem aceitação.
+  Ver [evidência funcional](functional-verification.md) e
+  [preparação das instalações](sumo-hot-potato-deployment.md).
 
 ## Ciclo de vida
 
 ```text
 DISABLED -> IDLE -> WAITING -> COUNTDOWN -> ENTRY_LOCKED -> RUNNING
-RUNNING -> SUDDEN_DEATH -> RESULTS -> RESETTING -> CLOSED
-Qualquer falha insegura -> RECOVERING
+RUNNING -> SUDDEN_DEATH -> FINISHING -> RESTORING -> CLOSED
+Qualquer falha insegura -> RECOVERING -> RESTORING -> CLOSED
 ```
 
-O módulo permanece fechado até o mundo, a fronteira da arena, os spawns, a área
-de espectadores e a reposição serem validados. A composição é alterável apenas
-em `WAITING`; durante a contagem e o jogo não são aceites novas entradas.
+O módulo permanece fechado até o mundo, a fronteira da arena e todos os spawns
+serem validados. Cada spawn tem de ficar dentro da região `arena`. A composição
+é alterável durante a fila; durante a contagem e o jogo não são aceites novas
+entradas.
 
 ## Mecânicas
 
@@ -47,11 +52,19 @@ depois de todas as sessões estarem restauradas.
 ```text
 minimum-players: 2..64
 maximum-players: minimum..64
-countdown-seconds: 1..3600
-fuse-seconds: 1..3600
-pass-range: 0.1..64.0
-sudden-death-seconds: 0..3600
+initial-fuse-seconds: 1..3600
+minimum-fuse-seconds: 1..initial-fuse-seconds
+fuse-reduction-per-round-seconds: 0..initial-fuse-seconds
+pass-cooldown-milliseconds: 0..60000
+pass-range-blocks: 0.1..32
+match-timeout-seconds: 1..86400
+spawns.<id>: {x, y, z, yaw, pitch}
 ```
+
+O número de entradas `spawns.*` tem de ser pelo menos `maximum-players`; cada
+uma tem de estar dentro da região `arena`. A contagem decrescente é fixa em 20
+segundos; os tokens cobrem pelo menos 10 minutos e todo o timeout configurado
+mais um segundo.
 
 O operador deve confirmar a identidade exata do mundo, a região da arena, os
 spawns, a área de espectadores e a política de reposição num ambiente
@@ -64,7 +77,14 @@ Os resultados usam o modo `ffa` e métricas limitadas `wins`, `survival_ms`,
 timeout ou restauração falhada produzem `NO_CONTEST` sem classificação. O
 resultado só é registado depois de a restauração ser confirmada.
 
+Se um participante sair ou desconectar durante a partida, toda a ronda termina
+como `NO_CONTEST`. Quando alguém está offline, a recuperação fica pendente e a
+arena recusa novas entradas até a sessão ser restaurada após autenticação.
+
 ## Limites de execução
 
-A ligação de listeners Paper, a reposição real da arena, displays, DiscordSRV e
-a execução da regra do pavio continuam `UNVERIFIED`.
+A faceta de mundo confirma a preservação de uma instalação imutável; não
+reconstrói terreno. Displays externos e DiscordSRV continuam `UNVERIFIED`.
+A linha de visão e a fronteira têm validação no controlador; obstáculos,
+entrada pública de espectadores e geometria real têm de ser ensaiados antes
+da ativação de produção.

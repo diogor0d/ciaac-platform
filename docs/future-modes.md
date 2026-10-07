@@ -11,6 +11,13 @@ Estado em 2026-08-22:
   descartável neste registo. Os testes Maven completos e Paper descartável ficam
   adiados.
 
+
+Atualização em 2026-10-07: Sumo tem aceitação local limitada, incluindo input,
+knockback/vitória e restauro autenticado; ver
+[verificação funcional](functional-verification.md). Os testes Maven completos
+passaram. Os outros cinco modos deste catálogo mantêm os gates de aceitação
+Paper/mundo indicados abaixo. A data de 2026-08-22 conserva o contexto histórico.
+
 ## Catálogo e política de localização
 
 | Modo | Política do mundo | Rota portuguesa | Ciclo de vida no código-fonte | Métrica pública |
@@ -186,7 +193,7 @@ segredos nem instruções de implantação.
 
 Os seis documentos de componente acima descrevem contratos atuais do código-fonte,
 e não um servidor implantado. Antes de permitir a admissão, executa as
-verificações Maven pendentes e um teste Paper descartável que cubra entrada e
+verificações Maven atuais e um teste Paper descartável que cubra entrada e
 saída, eventos duplicados, desconexão, recuperação após reinício ou encerramento,
 fuga de regiões, restauração de itens, identidade de alvos e perigos, libertação
 de chunks, idempotência das estatísticas e encaminhamento de comandos e ecrãs.

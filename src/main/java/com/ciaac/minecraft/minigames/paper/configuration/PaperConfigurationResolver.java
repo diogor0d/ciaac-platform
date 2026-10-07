@@ -397,6 +397,16 @@ public final class PaperConfigurationResolver {
         if (reduction.compareTo(initial) > 0) c.fail("FUSE_RULE_INVALID", c.root + ".fuse-reduction-per-round-seconds", "A redução do fusível excede o fusível inicial.");
         List<Location> spawns = parseSpawns(c);
         if (spawns.size() < maximum) c.fail("SPAWNS_UNRESOLVED", c.root + ".spawns", "Faltam pontos de entrada individuais para todos os participantes.");
+        CuboidRegion arena = c.regions.get("arena");
+        if (arena != null) {
+            for (int index = 0; index < spawns.size(); index++) {
+                if (!arena.contains(spawns.get(index))) {
+                    c.fail("SPAWN_OUTSIDE_ARENA", c.root + ".spawns",
+                            "Todos os pontos de entrada têm de estar dentro da região da arena.");
+                    break;
+                }
+            }
+        }
         HotPotatoConfig domain = new HotPotatoConfig(minimum, maximum, initial, minimumFuse, cooldown, range, timeout,
                 optionalRevision(c, "hot-potato-1"), reduction);
         return Optional.of(new ResolvedHotPotatoConfiguration(c.world, c.locations, c.regions, domain, spawns,
@@ -406,7 +416,11 @@ public final class PaperConfigurationResolver {
     private Optional<ResolvedSumoConfiguration> resolveSumo(Context c) {
         int minimum = c.values.requiredInteger("minimum-players", 2, 2);
         int maximum = c.values.requiredInteger("maximum-players", minimum, 2);
-        int rounds = c.values.requiredInteger("best-of-rounds", 1, 99);
+        int bestOfRounds = c.values.requiredInteger("best-of-rounds", 1, 99);
+        if (bestOfRounds % 2 == 0) {
+            c.fail("BEST_OF_ROUNDS_INVALID", c.root + ".best-of-rounds",
+                    "O número de rondas tem de ser ímpar para evitar um empate na série.");
+        }
         Duration timeout = c.values.requiredDurationSeconds("round-timeout-seconds", 1, 3_600);
         int fall = c.values.requiredInteger("fall-threshold-y", -64, 320);
         int level = c.values.requiredInteger("knockback-level", 1, 10);
@@ -416,7 +430,8 @@ public final class PaperConfigurationResolver {
             c.fail("MATERIAL_UNKNOWN", c.root + ".knockback-item-material", "O material de knockback é desconhecido.");
             material = Material.STICK;
         }
-        SumoConfig domain = new SumoConfig(optionalRevision(c, "sumo-1"), minimum, maximum, rounds, timeout);
+        int roundsToWin = bestOfRounds / 2 + 1;
+        SumoConfig domain = new SumoConfig(optionalRevision(c, "sumo-1"), minimum, maximum, roundsToWin, timeout);
         return Optional.of(new ResolvedSumoConfiguration(c.world, c.locations, c.regions, domain,
                 IsolationPolicy.strictNoProgress(), material, level, fall));
     }

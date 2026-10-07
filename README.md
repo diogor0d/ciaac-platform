@@ -17,6 +17,11 @@ aceitação dos restantes minijogos ou de equipas maiores. Consultar a
 [verificação funcional](docs/functional-verification.md) e o
 [registo de ativação](docs/arena-activation.md) para evidência e limites.
 
+
+Sumo e Batata Quente passaram aceitação local limitada em 2026-10-07, com
+peers autenticados, resultados e restauro exato. Produção destes modos aguarda
+[construção e aceitação das instalações](docs/sumo-hot-potato-deployment.md).
+
 > **Estado do projeto:** `0.1.0-alpha.1` é uma versão experimental. Código,
 > compilação e testes automatizados estão verificados. A aceitação em produção
 > da Arena está limitada ao 1v1 fixo e recuperação documentados em
@@ -155,7 +160,8 @@ Checkpoints históricos de 2026-08-31 e estado de produção verificado em 2026-
 | CI pública | `SOURCE-VERIFIED`: workflow do ramo `main` aprovado |
 | Conteúdo do repositório | `SOURCE-VERIFIED`: sem dados operacionais, credenciais ou chaves privadas no payload revisto |
 | Release assinada | Consultar a [release publicada](https://github.com/diogor0d/ciaac-platform/releases) |
-| Paper, nLogin, Multiverse, GrimAC e consumo real do atualizador | `UNVERIFIED` |
+| nLogin, outros contextos Paper/fornecedores e consumo real do atualizador | `UNVERIFIED` |
+| Sumo/Batata Quente locais — 2026-10-07 | 478 testes (477 passaram, um skip); peers nativos, vitória/timeout, desconexão e crash com 18 campos restaurados; produção aguarda instalações |
 | Produção — Arena/AuthMe em 2026-10-07 | JAR `d6cf9c8…`, 449 testes; combate nativo fixo 1v1 e desconexão do oponente sintético/reautenticação com restauro exato dos 15 campos `RUNTIME-VERIFIED`; equipas maiores, espectadores e outros minijogos não verificados |
 
 ## Dados e licenciamento

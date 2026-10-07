@@ -183,6 +183,12 @@ public final class HotPotatoGame {
         }
         acceptOperation(operation);
         roster.remove(player);
+        if (phase == HotPotatoPhase.COUNTDOWN) {
+            // A countdown snapshots its roster. Returning to WAITING invalidates
+            // that countdown so the adapter can start a fresh one after the
+            // remaining queue again reaches the minimum player count.
+            transitionTo(HotPotatoPhase.WAITING);
+        }
     }
 
     public synchronized void beginCountdown(OperationId operation) {

@@ -17,8 +17,10 @@ autenticadas por APIs. A identidade predefinida é `CiaacArenaPeer`; para testes
 de equipa, `--fixture-peer 2`, `3`, `4` ou `5` seleciona respetivamente
 `CiaacArenaPeer2`, `CiaacArenaPeer3`, `CiaacArenaPeer4` ou `CiaacArenaPeer5`. O primeiro argumento
 `--authorized-loopback-fixture` continua obrigatório; argumentos extra ou
-valores fora dessa lista são recusados. O nLogin deve inicializar e autenticar
-cada conta sintética pelo fluxo normal.
+valores fora dessa lista são recusados. O fornecedor configurado (AuthMe ou nLogin) deve inicializar e autenticar
+cada conta sintética pelo fluxo normal. A entrada no estado GAME e o ack de
+teleport não provam autenticação: o driver espera a confirmação do login normal
+e a consequência durável antes de continuar.
 
 Compilar com JDK 25 e um executável Maven existente:
 
@@ -30,16 +32,61 @@ A compilação resolve apenas as dependências da ferramenta, valida o digest do
 protocolo e escreve classes/classpath em `target/local-arena-client`. Não liga
 a nenhum servidor. Para execução autorizada, usar esse diretório e classpath
 com `LocalArenaPeer --authorized-loopback-fixture [--fixture-peer 2|3|4|5]` num stdin aberto. A leitura
-de comandos aceita somente `register`, `login`, `coliseu`, `minijogos` e
-`passaporte`, além de `status` e `quit`; nunca imprime os argumentos. Não enviar
+de comandos aceita `register`, `login`, `coliseu`, `minijogos`, `passaporte`,
+`sumo`, `batataquente` e as ações limitadas descritas abaixo, além de `status`
+e `quit`; nunca imprime os argumentos de autenticação. Não enviar
 credenciais num terminal com echo, nem guardá-las em Git.
 
 O peer reconhece teleports nativos, envia o ack e a posição resultante,
 reconhece batches de chunks e emite fim de tick. A biblioteca trata keepalive e
-a troca de estado de configuração. Mantém-se estacionário: não implementa
-física, navegação ou combate autónomo. Não serve para provar esses controlos.
+a troca de estado de configuração. Por predefinição mantém-se estacionário;
+as ações seguintes são explícitas e não implementam navegação ou combate autónomo.
 As mensagens do servidor são anunciadas sem imprimir texto ou argumentos.
 A conexão expira ao fim de 15 minutos e fecha ao sair do processo.
+
+## Ações limitadas no fixture — 2026-10-07
+
+O stdin aceita também os comandos normais `sumo` e `batataquente`. `attack N`
+e `interact N` usam somente o índice de peer `1..5`: o alvo tem de ter sido
+resolvido por um spawn nativo de jogador com o UUID offline exato de uma das
+identidades sintéticas acima. Não são aceites IDs de entidade ou nomes
+arbitrários. O cliente envia swing e ataque/interação nativos, com alcance
+limitado a 3,2 blocos e intervalo mínimo de 250 ms. `move dx dz` envia movimento
+horizontal relativo, finito, limitado a 0,3 blocos por passo e 50 ms entre
+passos; não permite coordenadas absolutas nem alteração direta de Y.
+`interact N` envia o clique na altura relativa de um bloco do alvo.
+`walk <east|west|north|south> <ticks>` envia input nativo para a frente durante 1 a
+100 ticks, apenas com `flat-floor-motion on`; uma caminhada ativa termina por
+si ou é cancelada ao desativar o modelo.
+
+`status` escreve JSON com `localPose`, `lastNativeTeleport`, `receivedVelocity`,
+`velocityPackets`, `lastNonzeroVelocity`, `nonzeroVelocityPackets`,
+`walkTicksRemaining`, `carrierTitle` e `carrierPeerIndex`. A posição local inclui
+movimentos enviados pelo cliente; só `lastNativeTeleport` é uma posição
+explicitamente recebida do servidor. O estado autoritativo continua a exigir
+verificação no Paper. Os títulos de Batata Quente são classificados por texto
+exato e identidades permitidas, sem imprimir texto arbitrário ou credenciais.
+
+`flat-floor-motion on [floor-y]` ativa uma aproximação explícita de movimento
+num piso sintético plano infinito. Sem valor, usa a altura Y local corrente;
+com valor, o driver declara explicitamente a altura do piso, por exemplo
+`flat-floor-motion on 80` depois de confirmar que Y=80 é o plano do piso.
+O valor tem de ser finito, estar entre -64 e 320, não ficar acima do jogador e
+estar no máximo quatro blocos abaixo da posição atual. Assim, após uma correção
+nativa a Y=80.614, o driver pode rever e indicar o piso real conhecido em Y=80;
+o peer continua suspenso até receber esse comando explícito. A aproximação aplica
+os impulsos de velocidade recebidos do servidor, gravidade e arrasto a 20 Hz,
+enviando posições normais. `walk` usa aceleração horizontal aproximada de 0,098
+no chão e 0,0196 no ar, com fricção 0,546 no chão e 0,91 no ar; envia input
+forward nativo e liberta-o ao concluir os ticks. `flat-floor-motion off` desativa
+a aproximação e cancela uma caminhada ativa. Cada teleport nativo liberta o input,
+cancela a caminhada e desativa a aproximação, exigindo nova confirmação do piso
+pelo driver. O movimento e as posições continuam a ser uma aproximação explícita
+de piso plano infinito; os resultados físicos e autoritativos exigem verificação
+nativa no cliente e no servidor. Não simula blocos, colisões laterais, buracos,
+escadas ou toda a física vanilla.
+Não usar a aproximação como prova de comportamento de um cliente vanilla;
+validar separadamente correções/rejeições do servidor e o resultado durável.
 
 Verificação em **2026-10-04**: o binário fixado declara 26.2/776, a ferramenta
 compilou e o peer chegou ao estado GAME real do Paper local, com ack de teleport
@@ -210,3 +257,35 @@ a porta 25567 ficou fechada. Ver [verificação funcional](../../docs/functional
 para o âmbito verificado e [ativação da Arena](../../docs/arena-activation.md)
 para recuperação, rollback e limites operacionais. Equipas maiores,
 espectadores e outros minijogos permanecem por verificar.
+
+## Driver de aceitação completo
+
+[acceptance.py](acceptance.py) inicia apenas o fixture privado já preparado em
+`/private/tmp/ciaac-paper-local-test`; recusa outro listener em 25567, JAR Paper
+não reconhecido, digest CIAAC divergente ou diretório de evidência fora de
+`/private/tmp`. Não cria mundos/facilidades nem aceita a EULA automaticamente.
+Requer JDK 25, classes da ferramenta compiladas, AuthMe revisto e configuração
+sintética descrita na evidência datada. A ausência deste fixture é um erro,
+nunca um motivo para usar outro servidor.
+
+```sh
+python3 tools/arena-client-fixture/acceptance.py \
+  --authorized-loopback-fixture --java /path/to/jdk25/bin/java \
+  --private-output /private/tmp/ciaac-minigame-evidence \
+  --expected-plugin-sha256 <digest-do-JAR-instalado> --case all
+```
+
+O que faz: testa os dois modos com três contas sintéticas, autenticação normal,
+resultados e comparação de 18 campos NBT; fecha apenas os processos que criou.
+`--case crash-sumo` e `--case crash-potato` gravam o estado nativo, terminam
+forçadamente só o subprocesso Paper próprio e verificam restauro depois de
+reauth com a mesma password. `sumo` e `potato` permitem ensaios individuais. `recover-only` autentica e
+drena sessões antigas sem iniciar nova partida.
+Passwords, logs e NBT ficam em ficheiros privados 0600/0700 fora de Git.
+O reset inicial da password sintética conclui antes de abrir a conexão; GAME
+ou um teleport ack não substituem a confirmação AuthMe de login bem-sucedido.
+
+Compilar com `build.py --maven /path/to/mvn --self-test` executa também as
+56 verificações offline de limites, identidade, serialização de interação,
+input, seleção dos pacotes de movimento e validação do piso explícito. O modelo de piso infinito continua
+aproximado: esta ferramenta não prova colisões/física completas de vanilla.

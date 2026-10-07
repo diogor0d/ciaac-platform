@@ -277,3 +277,44 @@ nega interação de blocos, pressão de entidades, ignição, formação, cresci
 que cruza a fronteira e alteração de redstone. A utilização de bow/shield não
 é negada por essa proteção de blocos. Ver o
 [checkpoint funcional](functional-verification.md) para hashes e limites.
+
+
+## Sumo e Batata Quente: instalações imutáveis — 2026-10-07
+
+A cobertura atual de `ArenaWorldStatePort` inclui `ARENA`, `KNOCKBACK_SUMO` e
+`HOT_POTATO`. A descrição anterior de cobertura exclusiva da Arena é histórica.
+`ImmutableMinigameWorldState` usa um manifest distinto, limitado e ligado à
+captura, com identidade do jogo, região, papel, UUID do mundo, limites de altura
+e versão exata do servidor. Capture/enter/purge/restore usam o journal durável;
+replays e restauro exigem a mesma política de proteção. Não é um snapshot de
+blocos nem um serviço de reconstrução de terreno.
+
+Estes dois jogos não criam blocos ou entidades do mundo. Os listeners de região
+e isolamento continuam obrigatórios; projéteis lançados por participantes
+isolados são recusados. Mantêm-se todos os outros adaptadores e os gates de
+autenticação, recuperação e compatibilidade. Mudança de região/mundo/versão
+com sessões pendentes fecha a recuperação em vez de inventar um rollback.
+Os seis modos que exigem terreno ou entidades próprios continuam fechados
+quando falta a respetiva faceta; esta extensão não os aceita.
+
+A ativação de produção aguarda instalações construídas, configuração real e
+aceitação do local. Os testes de journal e identidade provam o contrato de
+origem; não substituem os ensaios nativos de jogabilidade.
+
+## Coordenação opcional com Multiverse-Inventories — 2026-10-07
+
+Durante isolamento, incluindo recuperação autenticada, CIAAC cancela os quatro
+hooks públicos de leitura/escrita de perfis do Multiverse-Inventories. Isto
+impede que um teleporte ou alteração de modo de jogo substitua o inventário já
+restaurado, ou grave equipamento temporário num perfil de sobrevivência.
+Jogadores sem sessão isolada mantêm o comportamento normal do fornecedor.
+
+A ligação opcional verifica a identidade do fornecedor **5.3.5**, os bytes das
+classes críticas, métodos e HandlerLists independentes. Mudança de versão,
+perda ou substituição do fornecedor fecha os preflights de captura e restauro;
+não se aceita a nova implementação apenas porque expõe métodos semelhantes.
+Sem o fornecedor no arranque, a ligação é opcional; ativá-lo posteriormente
+exige reinício/revisão. A aceitação local de Batata Quente confirma a entrada e
+saída entre mundos com inventário, equipamento e XP originais preservados.
+A configuração/perfis persistentes do Multiverse não são desativados nem
+substituídos por este adaptador.

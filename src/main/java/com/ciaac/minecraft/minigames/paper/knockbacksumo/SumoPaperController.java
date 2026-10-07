@@ -20,11 +20,15 @@ import com.ciaac.minecraft.minigames.statistics.recording.MatchResultFactory;
 import com.ciaac.minecraft.minigames.statistics.recording.StatisticsResultSink;
 import java.nio.charset.StandardCharsets;
 import java.time.Clock;
+import java.time.Duration;
 import java.time.Instant;
 import java.util.LinkedHashMap;
+import java.util.Collections;
+import java.util.IdentityHashMap;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
 import org.bukkit.Location;
 import org.bukkit.entity.Player;
@@ -48,8 +52,10 @@ public final class SumoPaperController {
     private final Clock clock;
     private final StatisticsResultSink statistics;
     private final Map<UUID, Participant> waiting = new LinkedHashMap<>();
+    private final Set<Player> departingPlayers = Collections.newSetFromMap(new IdentityHashMap<>());
     private SumoSession game;
     private UUID matchId;
+    private String pendingRecoveryReason;
 
     public SumoPaperController(SumoPaperSettings settings, SumoConfig config, SessionCoordinator sessions,
                                ProtectedRegionRegistry regions, RegionAdmissionRegistry admissions,
@@ -71,8 +77,10 @@ public final class SumoPaperController {
     }
 
     public synchronized Status status() {
-        SumoPhase phase = game == null ? SumoPhase.WAITING : game.phase();
+        SumoPhase phase = pendingRecoveryReason != null ? SumoPhase.CANCELLED
+                : game == null ? SumoPhase.WAITING : game.phase();
         String message = !settings.enabled() ? "Fechado"
+                : pendingRecoveryReason != null ? "A recuperar sessões anteriores"
                 : phase == SumoPhase.RUNNING ? "Combate em curso"
                 : phase == SumoPhase.FINISHING ? "A terminar o combate"
                 : "À espera de jogadores";
@@ -82,10 +90,14 @@ public final class SumoPaperController {
     public synchronized AdmissionResult join(AdmissionRequest request, Player player) {
         if (!settings.enabled()) return AdmissionResult.rejected("MODULE_DISABLED", "Este minijogo está fechado.");
         if (player == null || !player.isOnline()) return AdmissionResult.rejected("PLAYER_UNAVAILABLE", "O jogador não está disponível.");
+        if (pendingRecoveryReason != null) return AdmissionResult.rejected("RECOVERY_PENDING", "A arena aguarda a recuperação das sessões anteriores.");
         requireRegion();
         if (game != null || waiting.size() >= 2) return AdmissionResult.rejected("FULL", "A arena está cheia.");
 
         AdmissionRequest admissionRequest = Objects.requireNonNull(request);
+        if (matchId != null && !matchId.equals(admissionRequest.matchId())) {
+            return AdmissionResult.rejected("STALE_MATCH", "Este convite já não pertence ao combate atual.");
+        }
         if (waiting.containsKey(player.getUniqueId())) {
             return AdmissionResult.rejected("ALREADY_JOINED", "Já estás inscrito neste combate.");
         }
@@ -93,13 +105,19 @@ public final class SumoPaperController {
                 .anyMatch(value -> !value.request().matchId().equals(admissionRequest.matchId()))) {
             return AdmissionResult.rejected("STALE_MATCH", "Este convite já não pertence ao combate atual.");
         }
+        boolean firstAdmission = waiting.isEmpty() && game == null;
+        if (firstAdmission) matchId = admissionRequest.matchId();
         AdmissionResult prepared = sessions.prepare(admissionRequest);
-        if (prepared.status() != AdmissionStatus.PREPARED) return prepared;
+        if (prepared.status() != AdmissionStatus.PREPARED) {
+            if (firstAdmission) matchId = null;
+            return prepared;
+        }
         waiting.put(player.getUniqueId(), new Participant(admissionRequest, player));
         issue(admissionRequest, clock.instant());
         if (!player.teleport(settings.firstSpawn().clone())) {
             waiting.remove(player.getUniqueId());
-            sessions.recover(admissionRequest.sessionId(), operation("TELEPORT_FAILED"), "TELEPORT_FAILED");
+            recoverFailedTeleport(sessions, admissions, admissionRequest, operation("TELEPORT_FAILED"));
+            if (waiting.isEmpty()) matchId = null;
             return AdmissionResult.rejected("TELEPORT_FAILED", "Não foi possível entrar na arena.");
         }
         ItemStack knockbackItem = new ItemStack(settings.knockbackItem());
@@ -113,6 +131,10 @@ public final class SumoPaperController {
 
     public synchronized void leave(UUID playerId) {
         UUID id = Objects.requireNonNull(playerId);
+        if (pendingRecoveryReason != null) {
+            continuePendingRecovery();
+            return;
+        }
         if (game != null && (game.phase() == SumoPhase.RUNNING || game.phase() == SumoPhase.FINISHING)) {
             finishRecovery("PLAYER_LEFT");
             return;
@@ -121,6 +143,7 @@ public final class SumoPaperController {
         if (participant != null) {
             admissions.revokeSession(participant.request().sessionId());
             sessions.recover(participant.request().sessionId(), operation("PLAYER_LEFT_" + id), "PLAYER_LEFT");
+            if (waiting.isEmpty()) matchId = null;
         }
     }
 
@@ -141,8 +164,10 @@ public final class SumoPaperController {
         boolean below = to.getBlockY() <= settings.fallThresholdY();
         boolean escaped = regions.find(settings.regionId()).map(region -> !region.bounds().contains(to)).orElse(true);
         if (below || escaped) {
-            event.setCancelled(true);
             onRingOut(event.getPlayer().getUniqueId(), Objects.requireNonNull(eventId));
+            // Paper rolls a cancelled move back to its old origin. Preserve the
+            // round-reset spawn or terminal snapshot location instead.
+            event.setTo(event.getPlayer().getLocation().clone());
         }
     }
 
@@ -153,12 +178,20 @@ public final class SumoPaperController {
                 || !waiting.containsKey(target.getUniqueId()) || source.equals(target)) {
             throw new IllegalArgumentException("players are not in this match");
         }
+        Vector value = scaleKnockbackImpulse(impulse, settings.knockbackLevel());
+        target.setVelocity(value);
+    }
+
+    /** Applies the configured level to a server-computed base impulse, retaining level 2 behavior. */
+    public static Vector scaleKnockbackImpulse(Vector impulse, int knockbackLevel) {
+        if (knockbackLevel < 1 || knockbackLevel > 10) throw new IllegalArgumentException("invalid knockback level");
         Vector value = Objects.requireNonNull(impulse, "impulse").clone();
         if (!Double.isFinite(value.getX()) || !Double.isFinite(value.getY()) || !Double.isFinite(value.getZ())) {
             throw new IllegalArgumentException("invalid impulse");
         }
-        if (value.lengthSquared() > 16.0) value.normalize().multiply(4.0);
-        target.setVelocity(value);
+        value.multiply(knockbackLevel / 2.0D);
+        if (value.lengthSquared() > 16.0D) value.normalize().multiply(4.0D);
+        return value;
     }
 
     public synchronized boolean combatAllowed(UUID attacker, UUID victim) {
@@ -167,25 +200,101 @@ public final class SumoPaperController {
     }
 
     public synchronized void onDisconnect(UUID playerId, UUID eventId) {
-        Objects.requireNonNull(playerId);
-        if (game == null || game.phase() == SumoPhase.WAITING) {
-            leave(playerId);
+        UUID id = Objects.requireNonNull(playerId);
+        Participant participant = waiting.get(id);
+        if (participant == null) {
+            if (pendingRecoveryReason != null) continuePendingRecovery();
             return;
         }
-        if (game.phase() == SumoPhase.RUNNING) game.disconnect(playerId, Objects.requireNonNull(eventId));
+        departingPlayers.add(participant.player());
+        if (game != null && game.phase() == SumoPhase.RUNNING) {
+            game.disconnect(id, Objects.requireNonNull(eventId));
+        }
         finishRecovery("DISCONNECT");
+    }
+
+    /** Recovers online participants on disable while preserving real quit deferrals. */
+    public synchronized void shutdown() {
+        if (pendingRecoveryReason != null) continuePendingRecovery();
+        else if (!waiting.isEmpty()) finishRecovery("PLUGIN_DISABLED");
     }
 
     /** Enforces {@link SumoConfig#roundTimeout()} at the adapter tick boundary. */
     public synchronized void tick(Instant now) {
         Instant current = Objects.requireNonNull(now);
+        if (pendingRecoveryReason != null) {
+            continuePendingRecovery();
+            return;
+        }
         if (game == null) return;
         if (game.phase() == SumoPhase.RUNNING && game.roundTimedOut(current)) {
             game.timeout(current, operation("ROUND_TIMEOUT"));
             finish("ROUND_TIMEOUT");
-        } else if (game.phase() == SumoPhase.FINISHING) {
+            return;
+        }
+        if (game.phase() == SumoPhase.RUNNING && !enforceAuthoritativePositions()) return;
+        if (game != null && game.phase() == SumoPhase.FINISHING) {
             finish(game.result().map(SumoResult::reasonCode).orElse("COMPLETED"));
         }
+    }
+
+    /** Server knockback can move a player without producing a usable PlayerMoveEvent. */
+    private boolean enforceAuthoritativePositions() {
+        ProtectedRegion region;
+        try {
+            region = regions.find(settings.regionId()).orElse(null);
+        } catch (RuntimeException unavailable) {
+            finishRecovery("BOUNDARY_UNAVAILABLE");
+            return false;
+        }
+        if (region == null || region.game() != GameKey.KNOCKBACK_SUMO || !region.requiresAdmission()) {
+            finishRecovery("BOUNDARY_UNAVAILABLE");
+            return false;
+        }
+        UUID regionWorld = region.bounds().worldId();
+        for (Participant participant : waiting.values()) {
+            Player player = participant.player();
+            if (departingPlayers.contains(player) || !isCurrentPlayerOnline(player)) continue;
+            Location location;
+            try {
+                location = player.getLocation();
+            } catch (RuntimeException unavailable) {
+                finishRecovery("POSITION_UNAVAILABLE");
+                return false;
+            }
+            if (location == null || location.getWorld() == null) {
+                finishRecovery("POSITION_WORLD_MISMATCH");
+                return false;
+            }
+            try {
+                if (!regionWorld.equals(location.getWorld().getUID())) {
+                    finishRecovery("POSITION_WORLD_MISMATCH");
+                    return false;
+                }
+            } catch (RuntimeException unavailable) {
+                finishRecovery("POSITION_WORLD_MISMATCH");
+                return false;
+            }
+            if (!Double.isFinite(location.getX()) || !Double.isFinite(location.getY())
+                    || !Double.isFinite(location.getZ())) {
+                finishRecovery("POSITION_UNAVAILABLE");
+                return false;
+            }
+            boolean belowFloor;
+            boolean insideBoundary;
+            try {
+                belowFloor = location.getBlockY() <= settings.fallThresholdY();
+                insideBoundary = region.bounds().contains(location);
+            } catch (RuntimeException unavailable) {
+                finishRecovery("BOUNDARY_UNAVAILABLE");
+                return false;
+            }
+            if (belowFloor || !insideBoundary) {
+                onRingOut(player.getUniqueId(), UUID.randomUUID());
+                return false;
+            }
+        }
+        return true;
     }
 
     private boolean start() {
@@ -215,6 +324,7 @@ public final class SumoPaperController {
             if (!player.isOnline() || !player.isValid()) return false;
             player.setVelocity(new Vector());
             player.setFallDistance(0.0f);
+            issue(values[i].request(), clock.instant());
             if (!player.teleport((i == 0 ? settings.firstSpawn() : settings.secondSpawn()).clone())) {
                 return false;
             }
@@ -229,13 +339,18 @@ public final class SumoPaperController {
         game.close(operation("CLOSE_" + reason));
         boolean restored = true;
         for (Participant participant : waiting.values()) restored &= finishOne(participant, reason);
-        if (restored && terminal != null) record(terminal);
+        if (!restored) {
+            finishRecovery("RESTORE_FAILED");
+            return;
+        }
+        if (terminal != null) record(terminal);
         waiting.clear();
         game = null;
         matchId = null;
     }
 
     private void finishRecovery(String reason) {
+        if (pendingRecoveryReason == null) pendingRecoveryReason = Objects.requireNonNull(reason);
         if (game != null) {
             if (game.phase() == SumoPhase.RUNNING || game.phase() == SumoPhase.WAITING) {
                 game.cancel(operation("CANCEL_" + reason));
@@ -244,16 +359,68 @@ public final class SumoPaperController {
                 game.close(operation("CLOSE_" + reason));
             }
         }
+        continuePendingRecovery();
+    }
+
+    private void continuePendingRecovery() {
+        if (pendingRecoveryReason == null) return;
         boolean restored = true;
         for (Participant participant : waiting.values()) {
-            restored &= sessions.recover(participant.request().sessionId(),
-                    operation("RESTORE_" + participant.player().getUniqueId()), reason).status() == AdmissionStatus.RECOVERED;
-            admissions.revokeSession(participant.request().sessionId());
+            UUID sessionId = participant.request().sessionId();
+            UUID playerId = participant.player().getUniqueId();
+            admissions.revokeSession(sessionId);
+            var session = sessions.findSession(sessionId);
+            if (session.isEmpty() || session.orElseThrow().phase() == com.ciaac.minecraft.minigames.runtime.SessionPhase.CLOSED) {
+                continue;
+            }
+            if (!shouldAttemptRecovery(Optional.of(session.orElseThrow().phase()),
+                    participant.player(), departingPlayers)) {
+                restored = false;
+                continue;
+            }
+            try {
+                restored &= sessions.recover(sessionId,
+                        operation("RESTORE_" + playerId), pendingRecoveryReason).status() == AdmissionStatus.RECOVERED;
+            } catch (RuntimeException failure) {
+                restored = false;
+            }
+            var remaining = sessions.findSession(sessionId);
+            if (remaining.isPresent() && remaining.orElseThrow().phase() != com.ciaac.minecraft.minigames.runtime.SessionPhase.CLOSED) {
+                restored = false;
+            }
         }
-        if (restored && !waiting.isEmpty()) recordNoContest(reason);
+        if (restored) {
+            if (!waiting.isEmpty()) recordNoContest(pendingRecoveryReason);
+            clearRecoveryState();
+        }
+    }
+
+    private static boolean isCurrentPlayerOnline(Player player) {
+        try {
+            return player.isOnline() && player.isValid();
+        } catch (RuntimeException unavailable) {
+            return false;
+        }
+    }
+
+    static boolean shouldAttemptRecovery(Optional<com.ciaac.minecraft.minigames.runtime.SessionPhase> phase,
+                                         Player player, Set<Player> departingPlayers) {
+        Objects.requireNonNull(phase, "phase");
+        Objects.requireNonNull(player, "player");
+        Objects.requireNonNull(departingPlayers, "departingPlayers");
+        return phase.isPresent()
+                && phase.orElseThrow() != com.ciaac.minecraft.minigames.runtime.SessionPhase.CLOSED
+                && phase.orElseThrow() != com.ciaac.minecraft.minigames.runtime.SessionPhase.QUARANTINED
+                && !departingPlayers.contains(player)
+                && isCurrentPlayerOnline(player);
+    }
+
+    private void clearRecoveryState() {
         waiting.clear();
         game = null;
         matchId = null;
+        pendingRecoveryReason = null;
+        departingPlayers.clear();
     }
 
     private boolean finishOne(Participant participant, String reason) {
@@ -292,14 +459,33 @@ public final class SumoPaperController {
 
     private void issue(AdmissionRequest request, Instant now) {
         admissions.issue(new RegionAdmissionToken(UUID.randomUUID(), request.sessionId(), request.playerId(),
-                settings.regionId(), now, now.plus(settings.tokenTtl())));
+                settings.regionId(), now, now.plus(admissionTokenLifetime(settings.tokenTtl(), config.roundTimeout()))));
+    }
+
+    static Duration admissionTokenLifetime(Duration configuredLifetime, Duration roundTimeout) {
+        Duration minimum = Objects.requireNonNull(roundTimeout, "roundTimeout").plusSeconds(1);
+        Duration configured = Objects.requireNonNull(configuredLifetime, "configuredLifetime");
+        return configured.compareTo(minimum) >= 0 ? configured : minimum;
     }
 
     private UUID operation(String purpose) {
+        return operationId(matchId, purpose);
+    }
+
+    static UUID operationId(UUID matchId, String purpose) {
         UUID root = matchId == null
                 ? UUID.nameUUIDFromBytes("sumo-unmatched".getBytes(StandardCharsets.UTF_8))
                 : matchId;
         return UUID.nameUUIDFromBytes((root + ":" + purpose).getBytes(StandardCharsets.UTF_8));
+    }
+
+    static AdmissionResult recoverFailedTeleport(
+            SessionCoordinator sessions,
+            RegionAdmissionRegistry admissions,
+            AdmissionRequest request,
+            UUID operationId) {
+        admissions.revokeSession(request.sessionId());
+        return sessions.recover(request.sessionId(), operationId, "TELEPORT_FAILED");
     }
 
     private void requireRegion() {
@@ -307,6 +493,12 @@ public final class SumoPaperController {
                 .orElseThrow(() -> new IllegalStateException("Configured Sumo region is missing"));
         if (region.game() != GameKey.KNOCKBACK_SUMO || !region.requiresAdmission()) {
             throw new IllegalStateException("Sumo region is not an admitted participant region");
+        }
+        if (!region.bounds().contains(settings.firstSpawn())
+                || !region.bounds().contains(settings.secondSpawn())
+                || settings.firstSpawn().getBlockY() <= settings.fallThresholdY()
+                || settings.secondSpawn().getBlockY() <= settings.fallThresholdY()) {
+            throw new IllegalStateException("Sumo spawns must be inside the boundary and above the fall threshold");
         }
     }
 }

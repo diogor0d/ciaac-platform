@@ -34,6 +34,33 @@ class HotPotatoGameTest {
     }
 
     @Test
+    void leavingDuringCountdownReturnsToWaitingAndAllowsQueueToRestart() {
+        HotPotatoGame game = new HotPotatoGame(
+                MATCH_ID, 2, 3, Duration.ofSeconds(5), Duration.ofSeconds(2), Duration.ofSeconds(1),
+                new FirstPlayerRandom());
+        game.enable(op(1));
+        game.openQueue(op(2));
+        game.join(PLAYER_A, op(3));
+        game.join(PLAYER_B, op(4));
+        game.beginCountdown(op(5));
+
+        game.leave(PLAYER_B, op(6));
+
+        assertEquals(HotPotatoPhase.WAITING, game.phase());
+        assertEquals(Set.of(PLAYER_A), game.roster());
+        assertThrows(HotPotatoGame.DuplicateOperationException.class, () -> game.leave(PLAYER_B, op(6)));
+        assertThrows(IllegalStateException.class, () -> game.beginCountdown(op(7)));
+
+        game.join(PLAYER_C, op(8));
+        game.beginCountdown(op(9));
+        game.lockEntry(op(10));
+        game.start(START, op(11));
+        assertEquals(HotPotatoPhase.RUNNING, game.phase());
+        assertEquals(Set.of(PLAYER_A, PLAYER_C), game.livePlayers());
+        assertThrows(IllegalStateException.class, () -> game.leave(PLAYER_A, op(12)));
+    }
+
+    @Test
     void seededRandomSelectsAnInjectableInitialCarrier() {
         HotPotatoGame game = newGame(new FirstPlayerRandom());
         game.join(PLAYER_A, op(3));

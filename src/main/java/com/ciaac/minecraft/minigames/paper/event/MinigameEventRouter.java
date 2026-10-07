@@ -1160,7 +1160,7 @@ public final class MinigameEventRouter implements Listener {
                 reportFailure("arena-disconnect-lookup");
             }
         }
-        if (sumo != null && inScope(policies.sumoParticipants(), player)) {
+        if (includeArena && sumo != null && inScope(policies.sumoParticipants(), player)) {
             attemptDisconnect("sumo-disconnect", () ->
                     sumo.controller().onDisconnect(playerId, eventId("sumo-disconnect", player)));
             // Sumo's wrapper owns a participant roster in addition to controller state.
@@ -1184,7 +1184,8 @@ public final class MinigameEventRouter implements Listener {
             // Disconnect mutates the controller directly; refresh the wrapper's match marker.
             attemptDisconnect("build-battle-wrapper-cleanup", buildBattle::currentMatchId);
         }
-        if (hotPotato != null && inScope(policies.hotPotatoParticipants(), player)) {
+        if (includeArena && hotPotato != null && (inScope(policies.hotPotatoParticipants(), player)
+                || hotPotato.controller().hasParticipant(playerId))) {
             attemptDisconnect("hot-potato-disconnect", () -> hotPotato.controller().onDisconnect(playerId));
             // Disconnect mutates the controller directly; refresh the wrapper's match marker.
             attemptDisconnect("hot-potato-wrapper-cleanup", hotPotato::currentMatchId);

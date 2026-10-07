@@ -16,7 +16,7 @@ import java.util.Set;
 import org.bukkit.Server;
 import org.bukkit.entity.Player;
 
-/** Arena-only immutable regions and owned projectile lifecycle; no generic world reset claim. */
+/** Immutable combat facilities; owned projectile lifecycle is supported only for Arena. */
 public final class ArenaWorldStatePort implements ExternalStateFacetPort {
     private static final String ID = "paper-26.2-84-arena-world-v1";
     private static final byte[] EMPTY = new byte[0];
@@ -26,6 +26,7 @@ public final class ArenaWorldStatePort implements ExternalStateFacetPort {
     private final ArenaProjectileOwnership projectiles;
     private final ExternalOperationJournal journal;
     private final AuditRepository audit;
+    private final ImmutableMinigameWorldState immutableGames;
     private boolean lifecycleReady;
     private boolean lifecycleFailed;
 
@@ -37,6 +38,7 @@ public final class ArenaWorldStatePort implements ExternalStateFacetPort {
         this.projectiles = Objects.requireNonNull(projectiles, "projectiles");
         this.journal = Objects.requireNonNull(journal, "journal");
         this.audit = Objects.requireNonNull(audit, "audit");
+        this.immutableGames = new ImmutableMinigameWorldState(ID, server, regions, journal, audit);
     }
 
     /** Runtime must call only after installing and verifying the required protection/lifecycle listeners. */
@@ -58,11 +60,12 @@ public final class ArenaWorldStatePort implements ExternalStateFacetPort {
     @Override public String id() { return ID; }
     @Override public int snapshotVersion() { return 1; }
     @Override public Set<PlayerStateFacet> facets() { return Set.of(PlayerStateFacet.TEMPORARY_WORLD_BLOCKS_AND_ENTITIES); }
-    @Override public Set<GameKey> supportedGames() { return Set.of(GameKey.ARENA); }
+    @Override public Set<GameKey> supportedGames() { return Set.of(GameKey.ARENA, GameKey.KNOCKBACK_SUMO, GameKey.HOT_POTATO); }
     @Override public boolean available() { return lifecycleReady && !lifecycleFailed && nativeBuildMatches(); }
 
     @Override public byte[] capture(Player player, PlayerStateOperation context) {
         requirePlayer(player, context, PlayerStateOperation.Kind.CAPTURE);
+        if (context.game() != GameKey.ARENA) return immutableGames.capture(context);
         byte[] manifest = currentManifest().encode();
         // Neither a replay nor a failed capture can replace the frozen world/region policy.
         ledger.capture(context, manifest);
@@ -74,6 +77,7 @@ public final class ArenaWorldStatePort implements ExternalStateFacetPort {
 
     @Override public void validateRestore(PlayerStateOperation context, int version, byte[] payload) {
         requireContext(context);
+        if (context.game() != GameKey.ARENA) { immutableGames.validate(context, version, payload); return; }
         if (version != snapshotVersion()) throw new IllegalArgumentException("Unsupported Arena world snapshot version");
         ArenaWorldManifest.decode(payload);
         var lease = ledger.requireLease(context);
@@ -88,6 +92,7 @@ public final class ArenaWorldStatePort implements ExternalStateFacetPort {
 
     @Override public void enterTemporaryState(Player player, PlayerStateOperation context) {
         requirePlayer(player, context, PlayerStateOperation.Kind.ENTER);
+        if (context.game() != GameKey.ARENA) { immutableGames.checkpoint(context); return; }
         byte[] payload = captured(context);
         validateRestore(context, snapshotVersion(), payload);
         journal.begin(ID, snapshotVersion(), context, payload);
@@ -98,6 +103,7 @@ public final class ArenaWorldStatePort implements ExternalStateFacetPort {
 
     @Override public void purgeTemporaryState(Player player, PlayerStateOperation context) {
         requirePlayer(player, context, PlayerStateOperation.Kind.PURGE);
+        if (context.game() != GameKey.ARENA) { immutableGames.checkpoint(context); return; }
         byte[] payload = captured(context);
         validateRestore(context, snapshotVersion(), payload);
         journal.begin(ID, snapshotVersion(), context, payload);
@@ -110,6 +116,7 @@ public final class ArenaWorldStatePort implements ExternalStateFacetPort {
     @Override public void restore(Player player, PlayerStateOperation context, int version, byte[] payload) {
         requirePlayer(player, context, PlayerStateOperation.Kind.RESTORE);
         validateRestore(context, version, payload);
+        if (context.game() != GameKey.ARENA) { immutableGames.checkpoint(context); return; }
         journal.begin(ID, snapshotVersion(), context, payload);
         ledger.markRestored(context);
         journal.commit(ID, snapshotVersion(), context, payload, EMPTY);
@@ -149,7 +156,7 @@ public final class ArenaWorldStatePort implements ExternalStateFacetPort {
     private void requireContext(PlayerStateOperation context) {
         requireThread();
         if (!available()) throw new IllegalStateException("Arena world lifecycle is unavailable");
-        if (context == null || context.game() != GameKey.ARENA || context.capturedConnectionId() == null)
+        if (context == null || !supportedGames().contains(context.game()) || context.capturedConnectionId() == null)
             throw new IllegalStateException("Arena world operation requires an Arena capture identity");
     }
 

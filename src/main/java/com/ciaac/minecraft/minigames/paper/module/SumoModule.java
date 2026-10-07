@@ -113,24 +113,16 @@ public final class SumoModule implements MinigameModule {
             clearIfIdle();
         } catch (RuntimeException failure) {
             faulted = true;
-            for (UUID playerId : List.copyOf(participantIds)) {
-                try { controller.onDisconnect(playerId, UUID.randomUUID()); }
-                catch (RuntimeException recoveryFailure) { failure.addSuppressed(recoveryFailure); }
-            }
-            participantIds.clear();
+            try { controller.shutdown(); }
+            catch (RuntimeException recoveryFailure) { failure.addSuppressed(recoveryFailure); }
             throw failure;
         }
     }
 
     @Override public synchronized void shutdown() {
         RuntimeException failure = null;
-        for (UUID playerId : List.copyOf(participantIds)) {
-            try { controller.onDisconnect(playerId, UUID.randomUUID()); }
-            catch (RuntimeException current) {
-                if (failure == null) failure = current; else failure.addSuppressed(current);
-            }
-        }
-        participantIds.clear();
+        try { controller.shutdown(); }
+        catch (RuntimeException current) { failure = current; }
         try { shutdownAction.run(); }
         catch (RuntimeException current) {
             if (failure == null) failure = current; else failure.addSuppressed(current);

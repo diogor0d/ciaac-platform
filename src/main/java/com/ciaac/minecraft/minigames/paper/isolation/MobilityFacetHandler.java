@@ -23,10 +23,19 @@ public final class MobilityFacetHandler implements FacetSnapshotHandler {
             PlayerStateFacet.FLIGHT,
             PlayerStateFacet.LOCATION_AND_WORLD);
     private final Server server;
+    private final Runnable sharingPreflight;
 
     public MobilityFacetHandler(Server server) {
-        this.server = java.util.Objects.requireNonNull(server, "server");
+        this(server, () -> { });
     }
+
+    public MobilityFacetHandler(Server server, Runnable sharingPreflight) {
+        this.server = java.util.Objects.requireNonNull(server, "server");
+        this.sharingPreflight = java.util.Objects.requireNonNull(sharingPreflight, "sharingPreflight");
+    }
+
+    @Override
+    public void preflight() { sharingPreflight.run(); }
 
     @Override
     public Set<PlayerStateFacet> facets() {

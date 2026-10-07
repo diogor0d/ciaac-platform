@@ -1,6 +1,7 @@
 package com.ciaac.minecraft.minigames.paper;
 
 import com.ciaac.minecraft.minigames.runtime.AuthenticationRegistry;
+import com.ciaac.minecraft.minigames.core.GameKey;
 import com.ciaac.minecraft.minigames.runtime.CombatPolicy;
 import com.ciaac.minecraft.minigames.runtime.CombatPolicyRegistry;
 import com.ciaac.minecraft.minigames.runtime.PlayerSession;
@@ -27,6 +28,7 @@ import org.bukkit.event.entity.EntityPlaceEvent;
 import org.bukkit.event.entity.EntityPickupItemEvent;
 import org.bukkit.event.entity.PlayerLeashEntityEvent;
 import org.bukkit.event.entity.PlayerDeathEvent;
+import org.bukkit.event.entity.ProjectileLaunchEvent;
 import org.bukkit.event.hanging.HangingPlaceEvent;
 import org.bukkit.event.inventory.CraftItemEvent;
 import org.bukkit.event.inventory.InventoryClickEvent;
@@ -67,6 +69,15 @@ public final class SessionIsolationListener implements Listener {
         this.combatPolicies = Objects.requireNonNull(combatPolicies, "combatPolicies");
         this.temporaryItems = Objects.requireNonNull(temporaryItems, "temporaryItems");
         this.violations = Objects.requireNonNull(violations, "violations");
+    }
+
+    /** Sumo and Hot Potato never create world entities; keep their immutable policy explicit. */
+    @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = false)
+    public void onProjectileLaunch(ProjectileLaunchEvent event) {
+        if (event.getEntity().getShooter() instanceof Player player) {
+            isolated(player).filter(session -> session.game() == GameKey.KNOCKBACK_SUMO
+                    || session.game() == GameKey.HOT_POTATO).ifPresent(session -> event.setCancelled(true));
+        }
     }
 
     @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = false)

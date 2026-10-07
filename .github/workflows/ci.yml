@@ -27,3 +27,5 @@ jobs:
           python3 scripts/check_docs.py
       - name: Testar e empacotar
         run: mvn --batch-mode --no-transfer-progress clean verify
+      - name: Verificar cliente sintético sem conexão
+        run: python3 tools/arena-client-fixture/build.py --maven mvn --self-test

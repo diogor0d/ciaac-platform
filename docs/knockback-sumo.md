@@ -1,13 +1,17 @@
 # Sumo de Repulsão
 
-Estado em 2026-08-24 (endurecimento do código-fonte reconciliado):
+Estado em 2026-10-07:
 
-- `SOURCE-VERIFIED`: `SumoSession`, `SumoPaperController`, `SumoModule`,
-  o resolver, o assembler, o encaminhador partilhado de eventos e o registo
-  de resultados estão presentes nesta cópia de trabalho.
-- `UNVERIFIED`: não foi executada qualquer instalação, teste de
-  aceitação Paper em funcionamento ou teste Paper descartável. Os testes Maven
-  completos e Paper descartável ficam adiados.
+- `RUNTIME-VERIFIED` num Paper descartável: login AuthMe normal, entrada dos
+  dois jogadores, teleports, duas saídas nativas do ringue para vitória numa
+  série de três, empate por timeout, desconexão e restauro exato dos 18 campos
+  de estado observados. A recuperação de crash tem evidência separada.
+- Ataques nativos produziram vitória por repulsão sem dano normal. O modelo de
+  movimento dos peers é aproximado; física completa do cliente vanilla,
+  colisões e aceitação das instalações reais continuam por verificar.
+- Produção não foi ativada. Ver a
+  [preparação das instalações](sumo-hot-potato-deployment.md) e a
+  [evidência funcional](functional-verification.md).
 
 ## Experiência do jogador e comandos
 
@@ -41,14 +45,19 @@ O resolver fixa intencionalmente a lista em dois jogadores (`minimum-players` e
 partida para a fila e para a partida resultante. O controlador admite o primeiro
 jogador, teletransporta-o para `side-a`, marca o item de repulsão configurado e
 admite o segundo jogador em `side-b`. A sessão pura passa então pelos estados de
-espera, execução, conclusão/cancelamento e encerrado. `best-of-rounds` controla
-o número de vitórias de rondas necessário. Após uma saída do ringue que não
+espera, execução, conclusão/cancelamento e encerrado. `best-of-rounds` define
+o número ímpar de rondas da série; são necessárias `best-of-rounds / 2 + 1`
+vitórias para vencer (por exemplo, duas vitórias numa série de três rondas).
+Valores pares fecham a admissão para evitar uma série que possa terminar
+empatada. Após uma saída do ringue que não
 termine a partida, o controlador limpa ambas as velocidades, repõe a distância
 de queda e devolve cada jogador ao lado configurado. Uma reposição de ronda que
 falhe encerra a partida através da recuperação, em vez de continuar a partir de
 uma posição ambígua.
 
-A saída do ringue é um resultado controlado. O controlador trata
+A saída do ringue é um resultado controlado. Cada tick verifica também a
+posição autoritativa: a saída sem evento de movimento usa a mesma regra;
+mundo inesperado ou geometria indisponível recuperam sem atribuir vitória. O controlador trata
 `fall-threshold-y` configurado ou a saída da fronteira registada como uma saída
 do ringue. O encaminhador central de eventos cancela o dano de combate normal,
 encaminha apenas um impulso de repulsão limitado e calculado pelo servidor
@@ -75,6 +84,10 @@ estiver registada para este jogo e exigir admissão. A geometria sob
 responsabilidade do operador deve permanecer imutável e separada dos
 espectadores públicos.
 
+O controlador também exige que ambos os spawns estejam dentro da região
+`boundary` e acima de `fall-threshold-y`. Esta validação evita que o teleporte
+de entrada ou reposição de ronda seja interpretado como uma saída do ringue.
+
 A admissão utiliza `SessionCoordinator`, um `RegionAdmissionToken` por jogador
 e o equipamento temporário marcado. A saída, desconexão, falha de preparação,
 ronda terminal e encerramento do módulo utilizam a recuperação/reposição da
@@ -88,6 +101,11 @@ não permaneçam obsoletos após uma desconexão terminal normal. Cada passo é
 isolado e as falhas da rota são registadas sem expor detalhes internos aos
 jogadores; o monitor de isolamento persistente continua a ser a fronteira de
 recuperação alternativa.
+
+O impulso calculado pelo encaminhador é escalado pelo nível de knockback
+configurado, mantendo o nível `2` como referência, e continua limitado a
+magnitude quatro. Um teleporte de entrada recusado revoga imediatamente o
+token de admissão antes de recuperar a sessão.
 
 ## Configuração e preparação do operador
 

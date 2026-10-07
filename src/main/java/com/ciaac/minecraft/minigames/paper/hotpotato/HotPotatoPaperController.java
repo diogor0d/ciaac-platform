@@ -62,7 +62,10 @@ public final class HotPotatoPaperController {
     private final Clock clock;
     private final StatisticsResultSink statistics;
     private final Map<UUID, Participant> participants = new LinkedHashMap<>();
+    private final Map<UUID, Player> departingPlayers = new LinkedHashMap<>();
     private final Map<UUID, OperationId> eventOperations = new LinkedHashMap<>();
+    private Set<UUID> pendingRecoveryPlayers = Set.of();
+    private String pendingRecoveryReason;
     private HotPotatoGame game;
     private UUID matchId;
     private Instant phaseDeadline;
@@ -92,6 +95,11 @@ public final class HotPotatoPaperController {
         return new Status(settings.enabled(), phase, participants.size(), message);
     }
 
+    /** True for queued and admitted players so disconnect routing also covers the queue. */
+    public synchronized boolean hasParticipant(UUID playerId) {
+        return playerId != null && participants.containsKey(playerId);
+    }
+
     private static String phasePtPt(HotPotatoPhase phase) {
         return switch (phase) {
             case DISABLED -> "fechada";
@@ -111,6 +119,7 @@ public final class HotPotatoPaperController {
         Objects.requireNonNull(player, "player"); Objects.requireNonNull(request, "request");
         if (!settings.enabled()) return rejected("DISABLED", "A Batata Quente está temporariamente fechada.");
         if (!validGeometry() || !player.isOnline() || !player.isValid() || request.playerId() != null && !request.playerId().equals(player.getUniqueId()) || request.game() != GameKey.HOT_POTATO) return rejected("CONFIGURATION_UNAVAILABLE", "A arena ainda não está pronta.");
+        if (pendingRecoveryReason != null) return rejected("RECOVERY_PENDING", "A arena aguarda a recuperação das sessões anteriores.");
         if (participants.containsKey(player.getUniqueId())) return rejected("ALREADY_QUEUED", "Já estás na fila da Batata Quente.");
         if (game == null) { matchId = request.matchId(); eventOperations.clear(); operationSequence = 0; game = new HotPotatoGame(matchId, settings.config(), new Random(matchId.getMostSignificantBits() ^ matchId.getLeastSignificantBits())); game.enable(nextOperation()); game.openQueue(nextOperation()); }
         if (!matchId.equals(request.matchId()) || participants.size() >= settings.config().maximumPlayers()) return rejected("FULL", "A arena está cheia.");
@@ -118,7 +127,19 @@ public final class HotPotatoPaperController {
         return rejected("QUEUED", "Entraste na fila da Batata Quente. Aguarda o início.");
     }
 
-    public synchronized void leave(UUID playerId) { Participant p = participants.remove(Objects.requireNonNull(playerId)); if (p == null || game == null) return; if (game.phase() == HotPotatoPhase.WAITING || game.phase() == HotPotatoPhase.COUNTDOWN) { game.leave(playerId, nextOperation()); if (participants.isEmpty()) { game = null; matchId = null; eventOperations.clear(); operationSequence = 0; } return; } recoverAll("PLAYER_LEFT"); }
+    public synchronized void leave(UUID playerId) {
+        Participant participant = participants.get(Objects.requireNonNull(playerId));
+        if (participant == null || game == null) return;
+        if (game.phase() == HotPotatoPhase.WAITING || game.phase() == HotPotatoPhase.COUNTDOWN) {
+            game.leave(playerId, nextOperation());
+            participants.remove(playerId);
+            if (participants.isEmpty()) {
+                game = null; matchId = null; eventOperations.clear(); operationSequence = 0;
+            }
+            return;
+        }
+        recoverAll("PLAYER_LEFT");
+    }
 
     public synchronized void tick(Instant now) {
         Objects.requireNonNull(now); if (!settings.enabled() || game == null) return;
@@ -156,8 +177,36 @@ public final class HotPotatoPaperController {
 
     public synchronized void onExplosion(UUID affectedPlayer, UUID eventId) { eliminate(affectedPlayer, eventId, "EXPLOSION"); }
     public synchronized void onElimination(UUID playerId, UUID eventId, String reason) { eliminate(playerId, eventId, reason); }
-    public synchronized void onDisconnect(UUID playerId) { if (game == null) return; if (game.phase() == HotPotatoPhase.WAITING || game.phase() == HotPotatoPhase.COUNTDOWN) { leave(playerId); return; } Instant now = clock.instant(); game.forfeit(playerId, now, nextOperation()); if (game.phase() == HotPotatoPhase.FINISHING) finish("DISCONNECT"); else { enterSuddenDeathIfReady(now); refreshCarrierPresentation(now, true); } }
-    public synchronized boolean allowTeleport(Player player, Location destination) { if (internalTeleport || game == null || player == null || !participants.containsKey(player.getUniqueId()) || game.phase() == HotPotatoPhase.WAITING) return true; Participant p = participants.get(player.getUniqueId()); return inside(destination) && p.sessionId() != null && admissions.permits(player.getUniqueId(), p.sessionId(), settings.participantRegionId(), clock.instant()); }
+    public synchronized void onDisconnect(UUID playerId) {
+        if (game == null || !participants.containsKey(Objects.requireNonNull(playerId))) return;
+        if (game.phase() == HotPotatoPhase.WAITING || game.phase() == HotPotatoPhase.COUNTDOWN) {
+            leave(playerId);
+            return;
+        }
+        // Disconnects and voluntary departures invalidate the whole match; they
+        // must not be scored as ordinary eliminations or leave an unresolved last survivor.
+        departingPlayers.put(playerId, participants.get(playerId).player());
+        recoverAll("PLAYER_DISCONNECTED");
+    }
+
+    public synchronized boolean allowTeleport(Player player, Location destination) {
+        if (internalTeleport || game == null || player == null
+                || !participants.containsKey(player.getUniqueId())
+                || game.phase() == HotPotatoPhase.WAITING) return true;
+        Participant participant = participants.get(player.getUniqueId());
+        if (participant.sessionId() != null) {
+            SessionPhase sessionPhase = sessionRegistry.findById(participant.sessionId())
+                    .map(PlayerSession::phase).orElse(null);
+            // SessionCoordinator changes to RESTORING/RECOVERING before it applies
+            // the saved mobility snapshot and teleports to the original location.
+            if (sessionPhase == SessionPhase.RESTORING || sessionPhase == SessionPhase.RECOVERING) {
+                return true;
+            }
+        }
+        return inside(destination) && participant.sessionId() != null
+                && admissions.permits(player.getUniqueId(), participant.sessionId(),
+                        settings.participantRegionId(), clock.instant());
+    }
     public synchronized boolean allowMove(Player player, Location destination) { return allowTeleport(player, destination); }
     public synchronized void shutdown() { if (game != null) recoverAll("PLUGIN_DISABLED"); }
 
@@ -170,8 +219,20 @@ public final class HotPotatoPaperController {
             PlayerSession session = prepared.session().orElseThrow(); Instant expires = now.plus(settings.tokenLifetime()); admissions.issue(new RegionAdmissionToken(UUID.randomUUID(), session.sessionId(), playerId, settings.participantRegionId(), now, expires));
             teleport(queued.player(), settings.spawns().get(index++)); queued.player().getInventory().setItemInMainHand(items.tag(new ItemStack(Material.POTATO), session.sessionId(), GameKey.HOT_POTATO)); sessions.activate(session.sessionId(), OperationIds.derive(queued.request().requestId(), "GAME_ACTIVE"), clock.instant()); participants.put(playerId, new Participant(queued.request(), queued.player(), session.sessionId()));
         }
-        game.start(now, nextOperation()); startedAt = now; phaseDeadline = null;
-        refreshCarrierPresentation(now, true);
+        Instant activationInstant = clock.instant();
+        for (Participant participant : participants.values()) {
+            admissions.issue(new RegionAdmissionToken(UUID.randomUUID(), participant.sessionId(), participant.request().playerId(),
+                    settings.participantRegionId(), activationInstant,
+                    activationInstant.plus(admissionTokenLifetime(settings.tokenLifetime(), settings.config().matchTimeout()))));
+        }
+        game.start(activationInstant, nextOperation()); startedAt = activationInstant; phaseDeadline = null;
+        refreshCarrierPresentation(activationInstant, true);
+    }
+
+    static Duration admissionTokenLifetime(Duration configuredLifetime, Duration matchTimeout) {
+        Duration minimum = Objects.requireNonNull(matchTimeout, "matchTimeout").plusSeconds(1);
+        Duration configured = Objects.requireNonNull(configuredLifetime, "configuredLifetime");
+        return configured.compareTo(minimum) >= 0 ? configured : minimum;
     }
 
     private void eliminate(UUID playerId, UUID eventId, String reason) { if (game == null) throw new IllegalStateException("no active game"); Instant now = clock.instant(); game.eliminate(playerId, now, eventOperation(eventId)); markEliminated(playerId); if (game.phase() == HotPotatoPhase.FINISHING) finish(reason); else { enterSuddenDeathIfReady(now); refreshCarrierPresentation(now, true); } }
@@ -219,8 +280,10 @@ public final class HotPotatoPaperController {
     private void recoverAll(String reason) {
         if (game == null || matchId == null) return;
         UUID recoveryMatchId = matchId;
+        String recoveryReason = pendingRecoveryReason == null ? reason : pendingRecoveryReason;
         Set<UUID> recoveryPlayers = new LinkedHashSet<>(participants.keySet());
         recoveryPlayers.addAll(game.roster());
+        recoveryPlayers.addAll(pendingRecoveryPlayers);
         Set<PlayerSession> sessionsForMatch = sessionRegistry.findByMatch(recoveryMatchId);
         sessionsForMatch.forEach(session -> recoveryPlayers.add(session.playerId()));
         if (game.phase() != HotPotatoPhase.RECOVERING && game.phase() != HotPotatoPhase.CLOSED
@@ -229,20 +292,49 @@ public final class HotPotatoPaperController {
         }
         boolean restored = true;
         for (PlayerSession session : sessionsForMatch) {
-            if (session.phase() == SessionPhase.QUARANTINED) restored = false;
-            if (!session.phase().terminal()) {
+            if (session.phase() == SessionPhase.QUARANTINED) {
+                restored = false;
+                admissions.revokeSession(session.sessionId());
+                continue;
+            }
+            if (session.phase().terminal()) continue;
+            if (!isCurrentPlayerOnline(session.playerId())) {
+                restored = false;
+                admissions.revokeSession(session.sessionId());
+                continue;
+            }
+            try {
                 restored &= sessions.recover(session.sessionId(),
-                        OperationIds.derive(recoveryMatchId, "RECOVER_" + session.playerId()), reason)
+                        OperationIds.derive(recoveryMatchId, "RECOVER_" + session.playerId()), recoveryReason)
                         .status() == AdmissionStatus.RECOVERED;
+            } catch (RuntimeException failure) {
+                restored = false;
             }
             admissions.revokeSession(session.sessionId());
         }
         if (game.phase() == HotPotatoPhase.RECOVERING) game.beginRestore(nextOperation());
-        if (game.phase() == HotPotatoPhase.RESTORING) game.completeRestore(nextOperation());
-        if (restored && !recoveryPlayers.isEmpty()) {
-            recordNoContest(recoveryMatchId, startedAt, reason, recoveryPlayers);
+        boolean sessionsPending = sessionRegistry.findByMatch(recoveryMatchId).stream()
+                .anyMatch(session -> !session.phase().terminal() || session.phase() == SessionPhase.QUARANTINED);
+        if (restored && !sessionsPending) {
+            if (game.phase() == HotPotatoPhase.RESTORING) game.completeRestore(nextOperation());
+            if (!recoveryPlayers.isEmpty()) recordNoContest(recoveryMatchId, startedAt, recoveryReason, recoveryPlayers);
+            clearControllerState();
+        } else {
+            pendingRecoveryPlayers = Set.copyOf(recoveryPlayers);
+            pendingRecoveryReason = recoveryReason;
         }
-        clearControllerState();
+    }
+
+    private boolean isCurrentPlayerOnline(UUID playerId) {
+        Participant participant = participants.get(playerId);
+        if (participant == null) return false;
+        try {
+            Player current = participant.player().getServer().getPlayer(playerId);
+            return current != null && current != departingPlayers.get(playerId)
+                    && current.isOnline() && current.isValid();
+        } catch (RuntimeException unavailable) {
+            return false;
+        }
     }
 
     private void recordResult(UUID terminalMatchId, MatchResult terminal, HotPotatoMetrics metrics,
@@ -281,6 +373,7 @@ public final class HotPotatoPaperController {
 
     private void clearControllerState() {
         participants.clear();
+        departingPlayers.clear();
         game = null;
         matchId = null;
         startedAt = null;
@@ -289,6 +382,8 @@ public final class HotPotatoPaperController {
         operationSequence = 0;
         nextHudRefresh = null;
         presentedCarrier = null;
+        pendingRecoveryPlayers = Set.of();
+        pendingRecoveryReason = null;
     }
 
     private void refreshCarrierPresentation(Instant now, boolean announceChange) {

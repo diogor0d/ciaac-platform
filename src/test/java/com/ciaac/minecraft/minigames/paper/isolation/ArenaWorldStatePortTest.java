@@ -42,7 +42,7 @@ class ArenaWorldStatePortTest {
     }
 
     @Test
-    void unreadyPortAdvertisesOnlyArenaAndRejectsOperationsBeforeReadingPlayer() {
+    void unreadyPortAdvertisesOnlyReviewedGamesAndRejectsOperationsBeforeReadingPlayer() {
         try (Environment environment = environment("unready")) {
             PlayerStateOperation capture = capture(GameKey.ARENA);
             PlayerStateOperation buildBattleCapture = capture(GameKey.BUILD_BATTLE);
@@ -53,7 +53,7 @@ class ArenaWorldStatePortTest {
             assertEquals(2, environment.port.contractVersion());
             assertEquals(1, environment.port.snapshotVersion());
             assertEquals(Set.of(PlayerStateFacet.TEMPORARY_WORLD_BLOCKS_AND_ENTITIES), environment.port.facets());
-            assertEquals(Set.of(GameKey.ARENA), environment.port.supportedGames());
+            assertEquals(Set.of(GameKey.ARENA, GameKey.KNOCKBACK_SUMO, GameKey.HOT_POTATO), environment.port.supportedGames());
             assertFalse(environment.port.available());
 
             assertThrows(IllegalStateException.class, () -> environment.port.capture(player, capture));

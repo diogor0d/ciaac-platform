@@ -14,14 +14,17 @@ para a evidência datada indicada e não ampliam o seu âmbito.
 Ver [verificação funcional e critérios de aceitação](functional-verification.md)
 para evidência automatizada, estado observado e ensaios Paper ainda pendentes.
 
+A [preparação de Sumo e Batata Quente](sumo-hot-potato-deployment.md) descreve
+as instalações que o operador terá de construir antes da ativação.
+
 ## Modos de minijogo
 
 | Documento | Âmbito | Estado presente |
 | --- | --- | --- |
 | [Coliseu](arena.md) | Arena, filas, equipamento protegido/apostado, isolamento e recuperação | `RUNTIME-VERIFIED` em 2026-10-07: 1v1 fixo e desconexão do oponente sintético/reauth com restauro exato; equipas maiores, espectadores e outros minijogos por verificar; ver [ativação](arena-activation.md) |
 | [Build Battle](build-battle.md) | Ciclo de vida, votação, parcelas e reset por template | `SOURCE-VERIFIED`; Paper, mundo e template `UNVERIFIED` |
-| [Batata Quente](hot-potato.md) | Passe, temporizador, eliminações e recuperação | `SOURCE-VERIFIED`; arena Paper `UNVERIFIED` |
-| [Sumo de Repulsão](knockback-sumo.md) | Rondas, repulsão, fronteira da plataforma e resultados | `SOURCE-VERIFIED`; aceitação Paper `UNVERIFIED` |
+| [Batata Quente](hot-potato.md) | Passe, temporizador, eliminações e recuperação | `RUNTIME-VERIFIED` local em 2026-10-07: três peers, passe/pavio, vitória e restauro; produção aguarda instalações |
+| [Sumo de Repulsão](knockback-sumo.md) | Rondas, repulsão, fronteira da plataforma e resultados | `RUNTIME-VERIFIED` local em 2026-10-07: 1v1, ring-out, timeout e restauro; física vanilla/produção pendentes |
 | [Parkour de Checkpoints](checkpoint-parkour.md) | Checkpoints, timeout, isolamento e resultados | `SOURCE-VERIFIED`; percurso Paper `UNVERIFIED` |
 | [Campo de Tiro com Arco](archery-range.md) | Lanes, alvos etiquetados, projéteis e resultados | `SOURCE-VERIFIED`; entidades e ligação Paper `UNVERIFIED` |
 | [Fuga às Bigornas](anvil-dodge.md) | Ondas, perigos etiquetados, esquivas e recuperação | `SOURCE-VERIFIED`; aceitação Paper `UNVERIFIED` |
@@ -41,8 +44,8 @@ para evidência automatizada, estado observado e ensaios Paper ainda pendentes.
 Os seis modos reunidos no ficheiro de nome histórico
 [catálogo agregado dos modos](future-modes.md) já estão implementados no
 código-fonte; não são trabalho futuro. O documento conserva a visão conjunta de
-Sumo, Parkour, Arco, Bigornas, Piso das Cores e Anéis de Elytra. A admissão e a
-execução Paper continuam por validar.
+Sumo, Parkour, Arco, Bigornas, Piso das Cores e Anéis de Elytra. Sumo tem aceitação local limitada em 2026-10-07; a admissão e a
+execução Paper dos restantes cinco modos continuam por validar.
 
 ## Contratos partilhados
 
