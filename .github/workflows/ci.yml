@@ -28,4 +28,4 @@ jobs:
       - name: Testar e empacotar
         run: mvn --batch-mode --no-transfer-progress clean verify
       - name: Verificar cliente sintético sem conexão
-        run: python3 tools/arena-client-fixture/build.py --maven mvn --self-test
+        run: python3 tools/arena-client-fixture/build.py --maven "$(command -v mvn)" --self-test
