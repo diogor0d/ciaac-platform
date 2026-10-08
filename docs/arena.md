@@ -1,7 +1,7 @@
 # Conceção da arena do Coliseu
 
 - Estado: domínio e adaptador Paper `SOURCE-VERIFIED`; módulo desativado por omissão
-- Atualizado: 2026-10-06 (`Europe/Lisbon`); Arena ativada no backend CIAAC com AuthMe.
+- Atualizado: 2026-10-08 (`Europe/Lisbon`); Arena ativada no backend CIAAC com AuthMe.
 - Produção: login normal e entrada/saída da fila `RUNTIME-VERIFIED`; partida com
   dois jogadores no alvo ainda `UNVERIFIED`. Os ensaios locais abaixo têm o seu
   próprio artefacto e âmbito; não equivalem a aceitação integral em produção.
@@ -353,3 +353,58 @@ por movimento e teleportes para Y=-40/Y=200 no mesmo JAR atual. Ver os resultado
 e limites exatos na [verificação funcional](functional-verification.md).
 O pacote está preparado localmente para revisão de migração/ativação no alvo;
 não foi instalado nem aceite em produção.
+
+## Aceitação nativa R5 no candidato anterior — 2026-10-08
+
+No Paper local descartável, o JAR CIAACPlatform com SHA-256
+`6792e1924d90214e3a7c26919eb3cd0d0aaa83c16db0de38157f533129c1dc05` passou o
+R5 nativo delimitado; o registo terminal confirmou `exit_code: 0` e
+`complete: true`. A configuração revista usou o kit fixo light, espada de ferro
+e escudo, e os dois spawns exatos. Ambos os materiais do kit foram encontrados
+no estado nativo dos jogadores. Movimento, velocidades recebidas e 21 ataques
+nativos terminaram em `VICTORY` / `LETHAL_DAMAGE` aos 30,02 segundos, dentro do
+limite de 45 segundos.
+
+Saída durante o combate terminou em `VICTORY` / `PLAYER_LEFT`. Quit durante o
+combate seguido de reautenticação normal AuthMe com a mesma conta terminou em
+`VICTORY` / `DISCONNECT`. Ambos restauraram exatamente os 18 campos nativos de
+cada jogador. Um crash frio durante `ACTIVE`, com dois jogadores, seguido de
+reinício e autenticação normal AuthMe, recuperou ambos e restaurou os mesmos 18
+campos; o resultado persistido foi `null`, sem resultado classificável. A base
+sintética terminou com 82 sessões `CLOSED` e 82 snapshots `RESTORED`. Um outsider
+teve o teleport para a região recusado e os seus 18 campos permaneceram
+inalterados.
+
+Uma tentativa separada com kit de armadura confirmou os itens nativos, mas não
+atingiu o limite de letalidade configurado e não é aceite como prova de
+letalidade. Nas tentativas R1–R4, R1 esperou incorretamente a mensagem de início
+nos dois clientes, embora ela seja enviada apenas ao último jogador pronto;
+R2 suspendeu o modelo de movimento depois de uma correção do servidor; R3
+atingiu o limite de perseguição; R4 resultou numa vitória
+`ESCAPE_ATTEMPT`, após o que os 18 campos nativos de ambos os jogadores
+coincidiram com as baselines. Esses estados foram recuperados após autenticação
+normal AuthMe. Estes resultados descrevem limites dos percursos do driver; não
+são evidência de defeito no plugin. Os registos e estados brutos permanecem
+privados.
+
+O R5 confirma apenas o kit light e os cenários acima no fixture local. Não
+confirma letalidade com kit de armadura, aceitação de equipas 3v3 ou partida
+adicional em produção. A validação de produção e as lacunas do resto da matriz
+mantêm-se separadas.
+
+## Repetição do candidato corrente — 2026-10-08
+
+O candidato `b34b6a0…` passou o percurso completo R2 da ferramenta corrente:
+kit light, spawns exatos, 21 ataques em 29,95 s e `VICTORY` / `LETHAL_DAMAGE`
+com o vencedor exato. Saída, desconexão/AuthMe e crash frio restauraram os 18
+campos de ambos os jogadores; o outsider permaneceu fora da região com estado
+inalterado. A base final tinha 185 sessões fechadas e snapshots restaurados,
+sem pendentes; Paper foi parado normalmente.
+
+R1 produziu `ESCAPE_ATTEMPT` porque a atribuição aleatória de equipas colocou
+o defensor junto da margem para onde era empurrado. Não foi aceite como
+letalidade. Antes de repetir, as três contas autenticaram-se normalmente e
+confirmaram os 18 campos originais. O driver escolhe agora o atacante de acordo
+com a maior margem do piso e aguarda pose do cliente igual à posição nativa;
+não altera spawns, permissões, anti-cheat ou resultados. Os limites de armadura,
+formatos, apostas e produção do ensaio anterior mantêm-se.

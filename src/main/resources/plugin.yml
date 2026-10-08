@@ -23,7 +23,7 @@ softdepend:
 commands:
   ciaac:
     description: Consulta e administra módulos da CIAACPlatform.
-    usage: /ciaac carrinhos <estado|recarregar|definir|predefinir|repor|repor-tudo>
+    usage: "/ciaac <carrinhos|instalações>"
   passaporte:
     description: Consulta o Passaporte CIAAC, recompensas e classificações.
     usage: /passaporte [recompensas|classificacao|reclamar|personalizar|admin]

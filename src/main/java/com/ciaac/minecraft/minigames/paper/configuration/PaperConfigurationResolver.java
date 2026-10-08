@@ -251,9 +251,22 @@ public final class PaperConfigurationResolver {
                 if (!regions.containsKey("range-boundary")) diagnostics.add(new ResolutionDiagnostic("REGION_MISSING",
                         root + ".regions.range-boundary", "É necessário configurar o limite do campo de tiro."));
             }
-            case ANVIL_DODGE, COLOR_FLOOR -> {
+            case ANVIL_DODGE -> {
                 requireInside(locations, regions, "start", "floor", root, diagnostics);
                 requireRegion(regions, "boundary", root, diagnostics);
+            }
+            case COLOR_FLOOR -> {
+                requireInside(locations, regions, "start", "boundary", root, diagnostics);
+                CuboidRegion floor = regions.get("floor");
+                Location start = locations.get("start");
+                if (floor == null) {
+                    diagnostics.add(new ResolutionDiagnostic("REGION_MISSING", root + ".regions.floor",
+                            "É necessário configurar o piso do Chão de Cores."));
+                } else if (start != null && (start.getBlockY() != floor.maxY() + 1
+                        || !floor.contains(start.getBlockX(), floor.maxY(), start.getBlockZ()))) {
+                    diagnostics.add(new ResolutionDiagnostic("LOCATION_OUTSIDE_REGION", root + ".locations.start",
+                            "A entrada tem de ficar sobre uma célula do piso, uma altura acima dos blocos."));
+                }
             }
             case ELYTRA_RINGS -> requireInside(locations, regions, "start", "course-boundary", root, diagnostics);
             default -> { }
@@ -462,8 +475,8 @@ public final class PaperConfigurationResolver {
         }
         String bowName = c.values.requiredString("bow-material", 128);
         Material bow = Material.matchMaterial(bowName.toUpperCase(Locale.ROOT));
-        if (bow == null) {
-            c.fail("MATERIAL_UNKNOWN", c.root + ".bow-material", "O material do arco é desconhecido.");
+        if (bow != Material.BOW) {
+            c.fail("MATERIAL_UNSUPPORTED", c.root + ".bow-material", "O campo de tiro exige um arco BOW.");
             bow = Material.BOW;
         }
         Map<Integer, ResolvedArcheryConfiguration.LaneDefinition> lanes = new LinkedHashMap<>();
@@ -482,7 +495,7 @@ public final class PaperConfigurationResolver {
             }
             TemplateResolution target = TemplateResolution.readyForAdapter(targetId);
             ArcheryConfig domain = new ArcheryConfig(optionalRevision(c, "archery-1"), laneId, shots,
-                    scoreBands.getOrDefault("bullseye", 1));
+                    Math.max(1, scoreBands.values().stream().mapToInt(Integer::intValue).max().orElse(1)));
             try {
                 if (lanes.put(laneId, new ResolvedArcheryConfiguration.LaneDefinition(laneId, regionId,
                         spawn.orElseThrow(), targetId, target, domain)) != null) {
@@ -516,6 +529,8 @@ public final class PaperConfigurationResolver {
             width = floor.maxX() - floor.minX() + 1;
             depth = floor.maxZ() - floor.minZ() + 1;
             if (width * (long) depth > 4_096) c.fail("GEOMETRY_UNSAFE", c.root + ".regions.floor", "A grelha excede o limite seguro de células.");
+            validateAnvilHazardEnvelope(c, floor, c.regions.get("boundary"));
+            validateAnvilMarkerLimit(c, width * (long) depth, waves, hazards, increment);
         }
         AnvilDodgeConfig domain = new AnvilDodgeConfig(minimum, maximum, waves, warning, interval,
                 seed, revision, IsolationPolicy.strictNoProgress(), width * depth, hazards, increment);
@@ -523,7 +538,40 @@ public final class PaperConfigurationResolver {
                 hazards, increment, width, depth, TemplateResolution.readyForAdapter("tagged-anvil-hazard")));
     }
 
+    private void validateAnvilMarkerLimit(Context c, long floorCells, int waves, int hazards, int increment) {
+        long markers = 0;
+        for (int wave = 0; wave < waves; wave++) {
+            markers += Math.min(floorCells, hazards + (long) wave * increment);
+            if (markers > 4_096) {
+                c.fail("ANVIL_MARKER_LIMIT_EXCEEDED", c.root + ".wave-count",
+                        "O plano total de perigos excede o limite seguro de 4096 marcadores.");
+                return;
+            }
+        }
+    }
+
+    private void validateAnvilHazardEnvelope(Context c, CuboidRegion floor, CuboidRegion boundary) {
+        if (boundary == null) return;
+        long hazardMaxY = (long) floor.minY() + 8L;
+        boolean covered = floor.worldId().equals(boundary.worldId())
+                && boundary.minX() <= floor.minX() && boundary.maxX() >= floor.maxX()
+                && boundary.minZ() <= floor.minZ() && boundary.maxZ() >= floor.maxZ()
+                && boundary.minY() <= floor.minY() && boundary.maxY() >= hazardMaxY
+                && floor.minY() >= c.world.getMinHeight()
+                && hazardMaxY < c.world.getMaxHeight();
+        if (!covered) {
+            c.fail("ANVIL_ENVELOPE_OUTSIDE_BOUNDARY", c.root + ".regions.boundary",
+                    "O limite tem de abranger o piso e toda a animação das bigornas dentro da altura do mundo.");
+        }
+    }
+
     private Optional<ResolvedColorFloorConfiguration> resolveColorFloor(Context c) {
+        CuboidRegion floor = c.regions.get("floor");
+        if (floor == null || floor.minY() != floor.maxY()
+                || ((long) floor.maxX() - floor.minX() + 1) * ((long) floor.maxZ() - floor.minZ() + 1) > 4096) {
+            c.fail("GEOMETRY_UNSAFE", c.root + ".regions.floor",
+                    "O chão exige uma única altura e no máximo 4096 células.");
+        }
         int minimum = c.values.requiredInteger("minimum-players", 1, 64);
         int maximum = c.values.requiredInteger("maximum-players", minimum, 64);
         int rounds = c.values.requiredInteger("rounds", 1, 10_000);
@@ -550,6 +598,15 @@ public final class PaperConfigurationResolver {
         rejectOverlaps(c, ringRegions, "ring-regions");
         if (!ringRegions.keySet().equals(new LinkedHashSet<>(order))) c.fail("RING_ORDER_INVALID",
                 c.root + ".ring-regions", "Cada anel ordenado precisa de exatamente uma região.");
+        CuboidRegion boundary = c.regions.get("course-boundary");
+        if (boundary != null) {
+            for (Map.Entry<String, CuboidRegion> entry : ringRegions.entrySet()) {
+                if (!containsRegion(boundary, entry.getValue())) {
+                    c.fail("RING_OUTSIDE_BOUNDARY", c.root + ".ring-regions." + entry.getKey(),
+                            "A região completa de cada anel tem de ficar dentro dos limites do percurso.");
+                }
+            }
+        }
         String revision = c.values.requiredString("course-revision", 32);
         Duration timeout = c.values.requiredDurationSeconds("run-timeout-seconds", 1, 86_400);
         int preload = c.values.requiredInteger("preload-radius-chunks", 0, 8);
@@ -563,15 +620,22 @@ public final class PaperConfigurationResolver {
             CuboidRegion region = ringRegions.get(order.get(index));
             if (region == null) continue;
             checkpoints.add(new RingCheckpoint(index + 1,
-                    (region.minX() + region.maxX()) / 2.0,
-                    (region.minY() + region.maxY()) / 2.0,
-                    (region.minZ() + region.maxZ()) / 2.0));
+                    ((double) region.minX() + region.maxX()) / 2.0,
+                    ((double) region.minY() + region.maxY()) / 2.0,
+                    ((double) region.minZ() + region.maxZ()) / 2.0));
         }
         ElytraCourseRevision course = new ElytraCourseRevision(revision, c.world.getUID().toString(), checkpoints);
         ElytraRingsConfig domain = ElytraRingsConfig.dedicatedWorld(timeout, course);
         TemplateResolution rings = TemplateResolution.readyForAdapter("ordered-ring-targets");
         return Optional.of(new ResolvedElytraRingsConfiguration(c.world, c.locations, c.regions, domain, course,
                 marker, order, ringRegions, preload, rockets, allowRockets, concurrent, 3.0, rings));
+    }
+
+    private static boolean containsRegion(CuboidRegion outer, CuboidRegion inner) {
+        return outer.worldId().equals(inner.worldId())
+                && outer.minX() <= inner.minX() && outer.maxX() >= inner.maxX()
+                && outer.minY() <= inner.minY() && outer.maxY() >= inner.maxY()
+                && outer.minZ() <= inner.minZ() && outer.maxZ() >= inner.maxZ();
     }
 
     private Set<ArenaKitMode> parseKitModes(Context c, List<String> raw) {

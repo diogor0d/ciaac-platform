@@ -34,7 +34,6 @@ import com.ciaac.minecraft.minigames.paper.arena.staked.StakedEscrowRecoveryServ
 import com.ciaac.minecraft.minigames.paper.buildbattle.BuildBattlePaperController;
 import com.ciaac.minecraft.minigames.paper.buildbattle.BuildBattlePaperSettings;
 import com.ciaac.minecraft.minigames.paper.buildbattle.BuildBattleResetPort;
-import com.ciaac.minecraft.minigames.paper.buildbattle.PaperBuildBattleResetPort;
 import com.ciaac.minecraft.minigames.paper.checkpointparkour.ParkourPaperController;
 import com.ciaac.minecraft.minigames.paper.checkpointparkour.ParkourPaperSettings;
 import com.ciaac.minecraft.minigames.paper.colorfloor.ColorFloorController;
@@ -326,17 +325,16 @@ public final class ConfiguredModuleAssembler implements ModuleAssembler {
                 plots, value.queueDuration(), value.buildDuration(),
                 value.voteDuration().multipliedBy(value.domain().maximumPlayers()), TOKEN_LIFETIME,
                 value.themeVoteDuration(), Duration.ofSeconds(value.secondsPerPlot()));
-        BuildBattleResetPort nativeReset = new PaperBuildBattleResetPort(
-                templateRepository(services), value.worldTemplateMarker(), value.rulesetRevision(),
-                boundingVolume(value.plots().values().stream()
-                        .map(plot -> required(value.regions(), plot.regionId())).toList()), 4_096);
-        Optional<BuildBattleResetPort> reset = Optional.of(
-                service(services, BuildBattleResetPort.class).orElse(nativeReset))
-                .filter(BuildBattleResetPort::available);
-        if (reset.isEmpty()) throw new IllegalStateException("BUILD_BATTLE_TEMPLATE_UNAVAILABLE");
+        Optional<BuildBattleResetPort> reset = services.buildBattleReset();
+        if (reset.isEmpty()) throw new IllegalStateException("BUILD_BATTLE_RESET_PROVIDER_UNAVAILABLE");
         BuildBattlePaperController controller = new BuildBattlePaperController(
                 settings, services.sessionCoordinator(), services.sessions(), services.regions(),
-                services.regionAdmissions(), services.temporaryItems(), reset, services.clock(), statistics);
+                services.regionAdmissions(), services.temporaryItems(), reset, services.clock(), statistics, session -> {
+                    Player player = services.plugin().getServer().getPlayer(session.playerId());
+                    var auth = services.authentication().current(session.playerId(), services.clock().instant());
+                    return player != null && player.isOnline() && player.isValid() && auth.isPresent()
+                            && services.connections().isCurrent(player, auth.orElseThrow().connectionId());
+                });
         return new BuildBattleModule(controller, identity, services.clock());
     }
 
@@ -430,10 +428,18 @@ public final class ConfiguredModuleAssembler implements ModuleAssembler {
             }
 
             @Override public AnvilDodgeController create(UUID matchId, Player initialPlayer) {
-                return new AnvilDodgeController(matchId, new AnvilDodgeGame(matchId, value.domain()),
+                var controller = new AnvilDodgeController(matchId, new AnvilDodgeGame(matchId, value.domain()),
                         settings, services.sessionCoordinator(), services.sessions(),
                         services.regionAdmissions(), services.regions(), services.clock(),
-                        services.plugin(), statistics);
+                        services.plugin(), statistics, session -> {
+                            Player player = services.plugin().getServer().getPlayer(session.playerId());
+                            var auth = services.authentication().current(session.playerId(), services.clock().instant());
+                            return player != null && player.isOnline() && player.isValid() && auth.isPresent()
+                                    && services.connections().isCurrent(player, auth.orElseThrow().connectionId());
+                        });
+                controller.hazardOwnership(services.anvilHazards().orElseThrow(
+                        () -> new IllegalStateException("ANVIL_NATIVE_OWNERSHIP_UNAVAILABLE")));
+                return controller;
             }
 
             @Override public ModuleStatus status(AnvilDodgeController controller, UUID matchId) {
@@ -496,7 +502,12 @@ public final class ConfiguredModuleAssembler implements ModuleAssembler {
             @Override public ColorFloorController create(UUID matchId, Player initialPlayer) {
                 return new ColorFloorController(matchId, new ColorFloorGame(matchId, value.domain()),
                         settings, services.sessionCoordinator(), services.sessions(),
-                        services.regionAdmissions(), services.regions(), services.clock(), statistics);
+                        services.regionAdmissions(), services.regions(), services.clock(), statistics, session -> {
+                            Player player = services.plugin().getServer().getPlayer(session.playerId());
+                            var auth = services.authentication().current(session.playerId(), services.clock().instant());
+                            return player != null && player.isOnline() && player.isValid() && auth.isPresent()
+                                    && services.connections().isCurrent(player, auth.orElseThrow().connectionId());
+                        });
             }
 
             @Override public ModuleStatus status(ColorFloorController controller, UUID matchId) {
@@ -551,7 +562,14 @@ public final class ConfiguredModuleAssembler implements ModuleAssembler {
                         new ElytraRingsGame(matchId, initialPlayer.getUniqueId(), value.domain()),
                 settings, services.sessionCoordinator(), services.sessions(),
                 services.regionAdmissions(), services.regions(), services.temporaryItems(),
-                services.clock(), services.plugin(), statistics);
+                services.clock(), statistics,
+                new com.ciaac.minecraft.minigames.paper.elytrarings.ElytraChunkPreparation(settings, services.plugin()),
+                session -> {
+                    Player player = services.plugin().getServer().getPlayer(session.playerId());
+                    var auth = services.authentication().current(session.playerId(), services.clock().instant());
+                    return player != null && player.isOnline() && player.isValid() && auth.isPresent()
+                            && services.connections().isCurrent(player, auth.orElseThrow().connectionId());
+                });
             }
 
             @Override public ModuleStatus status(ElytraRingsController controller, UUID matchId) {
@@ -680,31 +698,6 @@ public final class ConfiguredModuleAssembler implements ModuleAssembler {
 
     private static TemplateArtifactRepository templateRepository(PlatformServices services) {
         return new TemplateArtifactRepository(services.plugin().getDataFolder().toPath().resolve("templates"));
-    }
-
-    private static CuboidRegion boundingVolume(List<CuboidRegion> regions) {
-        if (regions == null || regions.isEmpty()) {
-            throw new IllegalArgumentException("At least one template region is required");
-        }
-        UUID world = regions.get(0).worldId();
-        int minX = Integer.MAX_VALUE;
-        int minY = Integer.MAX_VALUE;
-        int minZ = Integer.MAX_VALUE;
-        int maxX = Integer.MIN_VALUE;
-        int maxY = Integer.MIN_VALUE;
-        int maxZ = Integer.MIN_VALUE;
-        for (CuboidRegion region : regions) {
-            if (!world.equals(region.worldId())) {
-                throw new IllegalArgumentException("Template regions belong to different worlds");
-            }
-            minX = Math.min(minX, region.minX());
-            minY = Math.min(minY, region.minY());
-            minZ = Math.min(minZ, region.minZ());
-            maxX = Math.max(maxX, region.maxX());
-            maxY = Math.max(maxY, region.maxY());
-            maxZ = Math.max(maxZ, region.maxZ());
-        }
-        return new CuboidRegion(world, minX, minY, minZ, maxX, maxY, maxZ);
     }
 
     private static String manifestDigest(List<StakedItem> items) {

@@ -1,6 +1,7 @@
 package com.ciaac.minecraft.minigames.paper.elytrarings;
 
 import com.ciaac.minecraft.minigames.elytrarings.RingCheckpoint;
+import com.ciaac.minecraft.minigames.region.CuboidRegion;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashSet;
@@ -104,7 +105,7 @@ public final class ElytraChunkPreparation {
         String initialCode;
         try {
             initialRequired = requiredChunks(settings.start(), settings.config().course().rings(),
-                    settings.preloadRadiusChunks());
+                    settings.preloadRadiusChunks(), settings.ringRegions());
             initialPhase = Phase.PREPARING;
             initialCode = "PREPARING";
         } catch (FootprintFailure failure) {
@@ -145,8 +146,17 @@ public final class ElytraChunkPreparation {
     public static Set<ChunkCoordinate> requiredChunks(Location start,
                                                        List<RingCheckpoint> rings,
                                                        int radius) {
+        return requiredChunks(start, rings, radius, List.of());
+    }
+
+    /** Returns the route/radius footprint plus every chunk intersecting configured ring cuboids. */
+    public static Set<ChunkCoordinate> requiredChunks(Location start,
+                                                       List<RingCheckpoint> rings,
+                                                       int radius,
+                                                       List<CuboidRegion> ringRegions) {
         Objects.requireNonNull(start, "start");
         Objects.requireNonNull(rings, "rings");
+        Objects.requireNonNull(ringRegions, "ringRegions");
         if (radius < 0 || radius > 8) throw new IllegalArgumentException("radius is invalid");
 
         List<ChunkCoordinate> anchors = new ArrayList<>(rings.size() + 1);
@@ -172,6 +182,27 @@ public final class ElytraChunkPreparation {
                             || z < Integer.MIN_VALUE || z > Integer.MAX_VALUE) {
                         throw new FootprintFailure("PRELOAD_COORDINATE_OUT_OF_RANGE");
                     }
+                    expanded.add(new ChunkCoordinate((int) x, (int) z));
+                    if (expanded.size() > MAX_REQUIRED_CHUNKS) {
+                        throw new FootprintFailure("PRELOAD_FOOTPRINT_TOO_LARGE");
+                    }
+                }
+            }
+        }
+        for (CuboidRegion region : ringRegions) {
+            Objects.requireNonNull(region, "ring region");
+            int minChunkX = Math.floorDiv(region.minX(), 16);
+            int maxChunkX = Math.floorDiv(region.maxX(), 16);
+            int minChunkZ = Math.floorDiv(region.minZ(), 16);
+            int maxChunkZ = Math.floorDiv(region.maxZ(), 16);
+            long width = (long) maxChunkX - minChunkX + 1;
+            long depth = (long) maxChunkZ - minChunkZ + 1;
+            long area = width * depth;
+            if (area <= 0 || area > MAX_REQUIRED_CHUNKS) {
+                throw new FootprintFailure("PRELOAD_FOOTPRINT_TOO_LARGE");
+            }
+            for (long x = minChunkX; x <= maxChunkX; x++) {
+                for (long z = minChunkZ; z <= maxChunkZ; z++) {
                     expanded.add(new ChunkCoordinate((int) x, (int) z));
                     if (expanded.size() > MAX_REQUIRED_CHUNKS) {
                         throw new FootprintFailure("PRELOAD_FOOTPRINT_TOO_LARGE");

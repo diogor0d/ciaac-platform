@@ -48,6 +48,40 @@ class ImmutableMinigameWorldStateTest {
     }
 
     @Test
+    void parkourPreservesItsBoundaryAcrossRestartAndRejectsChangedGeometry() {
+        var regions = new ProtectedRegionRegistry();
+        var bounds = new CuboidRegion(WORLD_ID, 400, -64, 400, 410, 319, 410);
+        regions.register(region(GameKey.CHECKPOINT_PARKOUR, "checkpoint-parkour.course-boundary",
+                ProtectedRegionRole.PARTICIPANT_ONLY, true, bounds));
+        var server = server(Map.of(WORLD_ID, world(WORLD_ID, -64, 320)), true);
+        var audit = new RecordingAudit();
+        var capture = capture(GameKey.CHECKPOINT_PARKOUR);
+        byte[] payload;
+        Path path = temporary.resolve("parkour-journal");
+        try (var journal = new ExternalOperationJournal(path)) {
+            var state = new ImmutableMinigameWorldState("immutable-test", server, regions, journal, audit);
+            payload = state.capture(capture);
+            state.checkpoint(phase(capture, PlayerStateOperation.Kind.ENTER, uuid(70), CAPTURE_EPOCH));
+        }
+        try (var journal = new ExternalOperationJournal(path)) {
+            var state = new ImmutableMinigameWorldState("immutable-test", server, regions, journal, audit);
+            var purge = phase(capture, PlayerStateOperation.Kind.PURGE, uuid(71), uuid(80));
+            var restore = phase(capture, PlayerStateOperation.Kind.RESTORE, uuid(72), uuid(80));
+            state.validate(purge, 1, payload);
+            state.checkpoint(purge);
+            state.validate(restore, 1, payload);
+            state.checkpoint(restore);
+            var changed = new ProtectedRegionRegistry();
+            changed.register(region(GameKey.CHECKPOINT_PARKOUR, "checkpoint-parkour.course-boundary",
+                    ProtectedRegionRole.PARTICIPANT_ONLY, true,
+                    new CuboidRegion(WORLD_ID, 400, -64, 400, 411, 319, 410)));
+            var changedState = new ImmutableMinigameWorldState("immutable-test", server, changed, journal, audit);
+            assertThrows(IllegalStateException.class, () -> changedState.validate(restore, 1, payload));
+        }
+        assertEquals(4, audit.events.size());
+    }
+
+    @Test
     void captureAndCheckpointsRemainByteEquivalentAcrossJournalReopenAndReconnect() {
         var regions = reviewedRegions();
         var server = server(Map.of(WORLD_ID, world(WORLD_ID, -64, 320)), true);

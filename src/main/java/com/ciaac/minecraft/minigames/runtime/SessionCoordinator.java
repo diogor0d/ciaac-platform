@@ -196,7 +196,7 @@ public final class SessionCoordinator {
                         clock.instant(),
                         reasonCode);
             }
-            if (session.phase() != SessionPhase.FINISHING) {
+            if (session.phase() != SessionPhase.FINISHING && session.phase() != SessionPhase.RESTORING) {
                 throw new IllegalStateException("Only an active/finishing session can complete normally");
             }
             restore(session, rootOperationId, false, reasonCode);
@@ -205,6 +205,8 @@ public final class SessionCoordinator {
                     "RESTORED",
                     "O teu estado survival foi restaurado.",
                     Optional.of(session));
+        } catch (com.ciaac.minecraft.minigames.isolation.WorldRecoveryPendingException pending) {
+            return pendingWorldRecovery(session);
         } catch (RuntimeException failure) {
             reportFailure(session, "RESTORE_FAILED", failure);
             quarantine(session, rootOperationId, "RESTORE_FAILED");
@@ -243,6 +245,8 @@ public final class SessionCoordinator {
                     "RECOVERED",
                     "A recuperação da tua sessão terminou com segurança.",
                     Optional.of(session));
+        } catch (com.ciaac.minecraft.minigames.isolation.WorldRecoveryPendingException pending) {
+            return pendingWorldRecovery(session);
         } catch (RuntimeException failure) {
             reportFailure(session, "RECOVERY_FAILED", failure);
             quarantine(session, rootOperationId, "RECOVERY_FAILED");
@@ -252,6 +256,11 @@ public final class SessionCoordinator {
                     "A recuperação precisa de revisão. A tua sessão ficou protegida e fechada.",
                     Optional.of(session));
         }
+    }
+
+    private static AdmissionResult pendingWorldRecovery(PlayerSession session) {
+        return new AdmissionResult(AdmissionStatus.REJECTED, "RECOVERY_PENDING",
+                "O restauro do mundo está a terminar; o teu estado continua protegido.", Optional.of(session));
     }
 
     private AdmissionResult failClosedAfterPreparationFailure(
@@ -299,7 +308,9 @@ public final class SessionCoordinator {
             UUID rootOperationId,
             boolean recovery,
             String reasonCode) {
-        if (recovery && session.phase() != SessionPhase.RECOVERING) {
+        SessionPhase initialPhase = session.phase();
+        if (recovery && session.phase() != SessionPhase.RECOVERING
+                && session.phase() != SessionPhase.RESTORING) {
             SessionPhase current = session.phase();
             if (current.terminal()) {
                 throw new IllegalStateException("A terminal session cannot enter recovery");
@@ -312,7 +323,7 @@ public final class SessionCoordinator {
                     clock.instant(),
                     reasonCode);
         }
-        if (!recovery) {
+        if (!recovery && session.phase() == SessionPhase.FINISHING) {
             transitionAndSave(
                     session,
                     OperationIds.derive(rootOperationId, "RESTORE_BEGIN"),
@@ -327,6 +338,10 @@ public final class SessionCoordinator {
                 .orElseThrow(() -> new IllegalStateException("Durable snapshot is missing"));
         validateSnapshotIdentity(session, snapshotRecord.snapshot());
         SnapshotState state = snapshotRecord.state();
+        if (state == SnapshotState.RESTORED && initialPhase != SessionPhase.RESTORING
+                && initialPhase != SessionPhase.RECOVERING) {
+            throw new IllegalStateException("A restored snapshot requires an already-restoring session");
+        }
         if (state == SnapshotState.CAPTURED || state == SnapshotState.TEMPORARY_APPLIED) {
             snapshots.transition(
                     snapshotId,
@@ -335,21 +350,23 @@ public final class SessionCoordinator {
                     SnapshotState.RESTORING,
                     clock.instant(),
                     reasonCode);
-        } else if (state != SnapshotState.RESTORING) {
+        } else if (state != SnapshotState.RESTORING && state != SnapshotState.RESTORED) {
             throw new IllegalStateException("Snapshot is not recoverable from state " + state);
         }
 
-        stateGateway.purgeTemporaryState(
-                OperationIds.derive(rootOperationId, "TEMPORARY_PURGE"), snapshotRecord.snapshot());
-        stateGateway.restore(
-                OperationIds.derive(rootOperationId, "SNAPSHOT_RESTORE_APPLY"), snapshotRecord.snapshot());
-        snapshots.transition(
-                snapshotId,
-                OperationIds.derive(rootOperationId, "SNAPSHOT_RESTORE_COMMIT"),
-                SnapshotState.RESTORING,
-                SnapshotState.RESTORED,
-                clock.instant(),
-                "RESTORE_COMMITTED");
+        if (state != SnapshotState.RESTORED) {
+            stateGateway.purgeTemporaryState(
+                    OperationIds.derive(rootOperationId, "TEMPORARY_PURGE"), snapshotRecord.snapshot());
+            stateGateway.restore(
+                    OperationIds.derive(rootOperationId, "SNAPSHOT_RESTORE_APPLY"), snapshotRecord.snapshot());
+            snapshots.transition(
+                    snapshotId,
+                    OperationIds.derive(rootOperationId, "SNAPSHOT_RESTORE_COMMIT"),
+                    SnapshotState.RESTORING,
+                    SnapshotState.RESTORED,
+                    clock.instant(),
+                    "RESTORE_COMMITTED");
+        }
 
         if (session.phase() == SessionPhase.RECOVERING) {
             transitionAndSave(

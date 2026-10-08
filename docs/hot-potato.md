@@ -1,13 +1,15 @@
 # Batata Quente
 
-Estado em 2026-10-07:
+Última atualização: 2026-10-08.
 
 - `RUNTIME-VERIFIED` num Paper descartável com três clientes autenticados:
   fila/countdown, teleports para mundo dedicado, passe nativo e passe de
   regresso, rejeição durante cooldown, eliminação pelo pavio, vitória,
   desconexão/reauth e restauro exato dos 18 campos observados.
-- A recuperação de crash tem evidência separada. As instalações de produção,
-  física de cliente vanilla e integrações externas ainda exigem aceitação.
+- No candidato `6792e19…`, o crash frio, reinício e autenticação normal AuthMe
+  restauraram exatamente os 18 campos Paper no fixture descartável. As
+  instalações de produção, física completa de cliente vanilla e integrações
+  externas ainda exigem aceitação.
   Ver [evidência funcional](functional-verification.md) e
   [preparação das instalações](sumo-hot-potato-deployment.md).
 

@@ -9,6 +9,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import com.ciaac.minecraft.minigames.core.GameKey;
 import com.ciaac.minecraft.minigames.isolation.PlayerStateOperation;
 import com.ciaac.minecraft.minigames.persistence.ArenaWorldLedger;
+import com.ciaac.minecraft.minigames.persistence.NativeProcessIdentity;
 import com.ciaac.minecraft.minigames.region.CuboidRegion;
 import com.ciaac.minecraft.minigames.region.ProtectedRegion;
 import com.ciaac.minecraft.minigames.region.ProtectedRegionRole;
@@ -146,6 +147,133 @@ class ArenaProjectileOwnershipTest {
             assertEquals(ArenaWorldLedger.Status.ARMED, environment.ledger.requireLease(capture).status());
             assertTrue(environment.ledger.entities(capture).stream()
                     .allMatch(row -> row.status() == ArenaWorldLedger.EntityStatus.CONFIRMED));
+        }
+    }
+
+    @Test
+    void coldProcessProofAllowsAbsentPendingAndConfirmedRowsToPurge() {
+        for (boolean confirmed : List.of(false, true)) {
+            try (Environment environment = environment(confirmed ? "cold-confirmed" : "cold-pending")) {
+                PlayerStateOperation capture = capture(1, confirmed ? 12 : 11, 3);
+                arm(environment, capture);
+                UUID id = uuid(440 + (confirmed ? 1 : 0));
+                environment.ledger.beginEntity(capture, id, WORLD_ID, ArenaWorldLedger.EntityType.ARROW,
+                        priorProcess());
+                if (confirmed) environment.ledger.confirmEntity(capture, id);
+                ArrowState absent = new ArrowState(environment.serverState, id, false);
+                assertNull(environment.serverState.entities.get(id));
+
+                environment.ownership.purge(purge(capture));
+
+                assertEquals(ArenaWorldLedger.EntityStatus.REMOVED,
+                        environment.ledger.findEntity(id).orElseThrow().status());
+                assertEquals(ArenaWorldLedger.Status.PURGED, environment.ledger.requireLease(capture).status());
+                assertEquals(0, absent.removalCalls);
+            }
+        }
+    }
+
+    @Test
+    void recreatedOwnershipInSameJvmCannotTreatAbsentPendingIntentAsColdProof() {
+        try (Environment environment = environment("same-process-absence")) {
+            PlayerStateOperation capture = capture(1, 13, 3);
+            arm(environment, capture);
+            ArrowState arrow = new ArrowState(environment.serverState, uuid(442), false);
+            environment.ownership.beforeAdd(capture, arrow.arrow);
+            assertNull(environment.serverState.entities.get(arrow.id));
+
+            ArenaProjectileOwnership reloadedOwner = new ArenaProjectileOwnership(environment.plugin, environment.ledger);
+            assertThrows(IllegalStateException.class, () -> reloadedOwner.purge(purge(capture)));
+            assertEquals(ArenaWorldLedger.EntityStatus.PENDING,
+                    environment.ledger.findEntity(arrow.id).orElseThrow().status());
+            assertEquals(ArenaWorldLedger.Status.ARMED, environment.ledger.requireLease(capture).status());
+        }
+    }
+
+    @Test
+    void legacyAbsenceAndUnloadedWorldFailClosed() {
+        try (Environment environment = environment("legacy-absence")) {
+            PlayerStateOperation capture = capture(1, 14, 3);
+            arm(environment, capture);
+            UUID id = uuid(443);
+            environment.ledger.beginEntity(capture, id, WORLD_ID, ArenaWorldLedger.EntityType.ARROW);
+            new ArrowState(environment.serverState, id, false);
+
+            assertThrows(IllegalStateException.class, () -> environment.ownership.purge(purge(capture)));
+            assertEquals(ArenaWorldLedger.EntityStatus.PENDING,
+                    environment.ledger.findEntity(id).orElseThrow().status());
+            assertEquals(ArenaWorldLedger.Status.ARMED, environment.ledger.requireLease(capture).status());
+        }
+        try (Environment environment = environment("cold-unloaded-world")) {
+            PlayerStateOperation capture = capture(1, 15, 3);
+            arm(environment, capture);
+            UUID id = uuid(444);
+            environment.ledger.beginEntity(capture, id, WORLD_ID, ArenaWorldLedger.EntityType.ARROW,
+                    priorProcess());
+            ArrowState absent = new ArrowState(environment.serverState, id, false);
+            environment.serverState.worlds.remove(WORLD_ID);
+
+            assertThrows(IllegalStateException.class, () -> environment.ownership.purge(purge(capture)));
+            assertEquals(ArenaWorldLedger.EntityStatus.PENDING,
+                    environment.ledger.findEntity(id).orElseThrow().status());
+            assertEquals(0, absent.removalCalls);
+        }
+    }
+
+    @Test
+    void coldAbsenceValidationChecksEveryRowBeforeMarkingAnyRemoved() {
+        try (Environment environment = environment("cold-prevalidate")) {
+            PlayerStateOperation capture = capture(1, 16, 3);
+            arm(environment, capture);
+            UUID cold = uuid(445);
+            UUID legacy = uuid(446);
+            environment.ledger.beginEntity(capture, cold, WORLD_ID, ArenaWorldLedger.EntityType.ARROW,
+                    priorProcess());
+            environment.ledger.beginEntity(capture, legacy, WORLD_ID, ArenaWorldLedger.EntityType.ARROW);
+            new ArrowState(environment.serverState, cold, false);
+            new ArrowState(environment.serverState, legacy, false);
+
+            assertThrows(IllegalStateException.class, () -> environment.ownership.purge(purge(capture)));
+
+            assertEquals(List.of(ArenaWorldLedger.EntityStatus.PENDING, ArenaWorldLedger.EntityStatus.PENDING),
+                    environment.ledger.entities(capture).stream().map(ArenaWorldLedger.Entity::status).toList());
+            assertEquals(ArenaWorldLedger.Status.ARMED, environment.ledger.requireLease(capture).status());
+        }
+    }
+
+    @Test
+    void liveSameUuidWrongTypeOrWrongLabelStillBlocksPurgeAndForeignUuidIsUntouched() {
+        try (Environment environment = environment("live-foreign-drift")) {
+            PlayerStateOperation capture = capture(1, 17, 3);
+            arm(environment, capture);
+            UUID wrongTypeId = uuid(447);
+            UUID wrongLabelId = uuid(448);
+            environment.ledger.beginEntity(capture, wrongTypeId, WORLD_ID, ArenaWorldLedger.EntityType.ARROW,
+                    priorProcess());
+            environment.ledger.beginEntity(capture, wrongLabelId, WORLD_ID, ArenaWorldLedger.EntityType.ARROW,
+                    priorProcess());
+            ArrowState wrongType = new ArrowState(environment.serverState, wrongTypeId, true);
+            wrongType.persistent = false;
+            wrongType.pickupStatus = AbstractArrow.PickupStatus.DISALLOWED;
+            wrongType.fireTicks = 0;
+            environment.serverState.add(wrongType);
+            ArrowState wrongLabel = new ArrowState(environment.serverState, wrongLabelId, false);
+            wrongLabel.persistent = false;
+            wrongLabel.pickupStatus = AbstractArrow.PickupStatus.DISALLOWED;
+            wrongLabel.fireTicks = 0;
+            wrongLabel.data.values.put(new NamespacedKey(environment.plugin, "arena-projectile-owner-v1"), "foreign-owner");
+            environment.serverState.add(wrongLabel);
+            ArrowState unrelated = new ArrowState(environment.serverState, uuid(449), false);
+            environment.serverState.add(unrelated);
+
+            assertThrows(IllegalStateException.class, () -> environment.ownership.purge(purge(capture)));
+
+            assertEquals(0, wrongType.removalCalls);
+            assertEquals(0, wrongLabel.removalCalls);
+            assertEquals(0, unrelated.removalCalls);
+            assertTrue(environment.serverState.entities.get(unrelated.id) == unrelated.entity());
+            assertTrue(environment.ledger.entities(capture).stream()
+                    .allMatch(row -> row.status() == ArenaWorldLedger.EntityStatus.PENDING));
         }
     }
 
@@ -320,7 +448,15 @@ class ArenaProjectileOwnershipTest {
             default -> defaultValue(method.getReturnType());
         });
         ArenaWorldLedger ledger = new ArenaWorldLedger(temporary.resolve(directoryName));
-        return new Environment(serverState, new ArenaProjectileOwnership(plugin, ledger), ledger);
+        return new Environment(serverState, plugin, new ArenaProjectileOwnership(plugin, ledger), ledger);
+    }
+
+    private static NativeProcessIdentity priorProcess() {
+        NativeProcessIdentity current = NativeProcessIdentity.current();
+        long priorPid = current.pid() == Long.MAX_VALUE ? current.pid() - 1 : current.pid() + 1;
+        long priorStart = current.startedAtEpochMillis() == Long.MAX_VALUE
+                ? current.startedAtEpochMillis() - 1 : current.startedAtEpochMillis() + 1;
+        return new NativeProcessIdentity(priorPid, priorStart);
     }
 
     private static void arm(Environment environment, PlayerStateOperation capture) {
@@ -388,11 +524,13 @@ class ArenaProjectileOwnershipTest {
 
     private static final class Environment implements AutoCloseable {
         private final ServerState serverState;
+        private final Plugin plugin;
         private final ArenaProjectileOwnership ownership;
         private final ArenaWorldLedger ledger;
 
-        private Environment(ServerState serverState, ArenaProjectileOwnership ownership, ArenaWorldLedger ledger) {
+        private Environment(ServerState serverState, Plugin plugin, ArenaProjectileOwnership ownership, ArenaWorldLedger ledger) {
             this.serverState = serverState;
+            this.plugin = plugin;
             this.ownership = ownership;
             this.ledger = ledger;
         }
@@ -402,12 +540,14 @@ class ArenaProjectileOwnershipTest {
 
     private static final class ServerState {
         private final Map<UUID, Entity> entities = new HashMap<>();
+        private final Map<UUID, World> worlds = new HashMap<>();
         private boolean primaryThread = true;
 
         private Object invoke(Object proxy, Method method, Object[] arguments) {
             return switch (method.getName()) {
                 case "isPrimaryThread" -> primaryThread;
                 case "getEntity" -> entities.get(arguments[0]);
+                case "getWorld" -> worlds.get(arguments[0]);
                 case "toString" -> "test-server";
                 case "hashCode" -> System.identityHashCode(proxy);
                 case "equals" -> proxy == arguments[0];
@@ -445,6 +585,7 @@ class ArenaProjectileOwnershipTest {
                 case "getName" -> "test-arena";
                 default -> defaultValue(method.getReturnType());
             });
+            server.worlds.put(WORLD_ID, world);
             this.data.container = proxy(PersistentDataContainer.class, data::invoke);
             Class<?> type = spectral ? SpectralArrow.class : Arrow.class;
             this.arrow = (AbstractArrow) proxy(type, this::invoke);

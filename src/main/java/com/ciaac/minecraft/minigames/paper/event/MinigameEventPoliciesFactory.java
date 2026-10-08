@@ -97,26 +97,38 @@ public final class MinigameEventPoliciesFactory {
             ResolvedArcheryConfiguration configuration,
             java.util.UUID playerId,
             Entity hitEntity) {
-        if (module == null || configuration == null || hitEntity == null) return Optional.empty();
+        if (module == null || configuration == null
+                || !(hitEntity instanceof org.bukkit.entity.ArmorStand stand)
+                || !stand.isValid() || stand.isDead() || stand.isMarker()) return Optional.empty();
         OptionalInt laneId = module.laneId(playerId);
         if (laneId.isEmpty()) return Optional.empty();
         ResolvedArcheryConfiguration.LaneDefinition lane = configuration.lanes().get(laneId.getAsInt());
         if (lane == null || !contains(configuration.regions().get(lane.regionId()), hitEntity.getLocation())) {
             return Optional.empty();
         }
-        String prefix = ARCHERY_TARGET_TAG + lane.targetId() + ":";
-        String band = hitEntity.getScoreboardTags().stream()
-                .filter(tag -> tag.startsWith(prefix))
-                .map(tag -> tag.substring(prefix.length()))
-                .filter(configuration.scoreBands()::containsKey)
-                .sorted()
-                .findFirst().orElse(null);
+        String band = resolveArcheryTargetBand(hitEntity.getScoreboardTags(),
+                lane.targetId(), configuration.scoreBands()).orElse(null);
         if (band == null) return Optional.empty();
         int points = configuration.scoreBands().get(band);
         module.controller().registerTarget(
                 hitEntity.getUniqueId(), lane.id(), lane.targetId(), band);
         return Optional.of(new MinigameEventRouter.ArcheryHit(
-                lane.id(), points, band.equals("bullseye")));
+                lane.id(), points, band.equals("bullseye"), hitEntity.getUniqueId()));
+    }
+
+    static Optional<String> resolveArcheryTargetBand(
+            java.util.Set<String> scoreboardTags,
+            String targetId,
+            Map<String, Integer> configuredBands) {
+        String prefix = ARCHERY_TARGET_TAG + Objects.requireNonNull(targetId, "targetId") + ":";
+        List<String> matches = Objects.requireNonNull(scoreboardTags, "scoreboardTags").stream()
+                .filter(tag -> tag.startsWith(prefix))
+                .map(tag -> tag.substring(prefix.length()))
+                .distinct()
+                .sorted()
+                .toList();
+        return matches.size() == 1 && Objects.requireNonNull(configuredBands, "configuredBands").containsKey(matches.getFirst())
+                ? Optional.of(matches.getFirst()) : Optional.empty();
     }
 
     private static Optional<MinigameEventRouter.BuildBattleVote> buildBattleVote(

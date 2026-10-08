@@ -20,9 +20,10 @@ import org.junit.jupiter.api.Test;
 
 class SessionIsolationProjectileTest {
     @Test
-    void projectileLaunchIsBlockedOnlyForIsolatedSumoAndHotPotatoSessions() {
+    void projectileLaunchIsBlockedForImmutableGamesButKeepsArenaOwnershipPath() {
         assertCancelled(GameKey.KNOCKBACK_SUMO, true);
         assertCancelled(GameKey.HOT_POTATO, true);
+        assertCancelled(GameKey.CHECKPOINT_PARKOUR, true);
         assertCancelled(GameKey.ARENA, false);
     }
 

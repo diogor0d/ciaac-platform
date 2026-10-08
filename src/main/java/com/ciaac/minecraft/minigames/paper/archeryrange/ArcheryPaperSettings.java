@@ -64,8 +64,8 @@ public record ArcheryPaperSettings(
         tokenTtl = positive(tokenTtl, "tokenTtl");
         attemptTimeout = positive(attemptTimeout, "attemptTimeout");
         bowMaterial = Objects.requireNonNull(bowMaterial, "bowMaterial");
-        if (!bowMaterial.isItem()) {
-            throw new IllegalArgumentException("bowMaterial must be an item");
+        if (bowMaterial != Material.BOW) {
+            throw new IllegalArgumentException("bowMaterial must be BOW for native arrow shots");
         }
         Objects.requireNonNull(scoreBands, "scoreBands");
         LinkedHashMap<String, Integer> scores = new LinkedHashMap<>();

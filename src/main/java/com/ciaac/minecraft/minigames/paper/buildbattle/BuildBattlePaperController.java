@@ -41,10 +41,13 @@ import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
+import java.util.function.Predicate;
 import net.kyori.adventure.text.Component;
 import net.kyori.adventure.text.event.ClickEvent;
 import net.kyori.adventure.text.format.NamedTextColor;
 import org.bukkit.Location;
+import org.bukkit.GameMode;
+import org.bukkit.event.inventory.InventoryCreativeEvent;
 import org.bukkit.Material;
 import org.bukkit.World;
 import org.bukkit.entity.Player;
@@ -67,7 +70,9 @@ public final class BuildBattlePaperController {
     private final Optional<BuildBattleResetPort> resetPort;
     private final Clock clock;
     private final StatisticsResultSink statistics;
+    private final Predicate<PlayerSession> restorationReady;
     private final Map<UUID, Participant> participants = new LinkedHashMap<>();
+    private final Set<UUID> departingPlayers = new LinkedHashSet<>();
     private final Map<UUID, BuildBattleOperationId> eventOperations = new LinkedHashMap<>();
     private final Map<UUID, Integer> reviewIndexes = new HashMap<>();
     private BuildBattleMatch match;
@@ -80,10 +85,11 @@ public final class BuildBattlePaperController {
     private BuildBattleResetPort.ResetHandle pendingReset;
     private BuildBattleResult pendingResult;
     private Instant pendingResultStartedAt;
-    private boolean pendingResetRecovery;
+    private boolean pendingResetComplete;
+    private boolean pendingResetFailed;
+    private UUID pendingRecoveryRoot;
     private String pendingRecoveryReason;
     private Set<UUID> pendingRecoveryPlayers = Set.of();
-    private boolean pendingRecoverySessionsRestored;
 
     public BuildBattlePaperController(
             BuildBattlePaperSettings settings,
@@ -108,6 +114,22 @@ public final class BuildBattlePaperController {
             Optional<BuildBattleResetPort> resetPort,
             Clock clock,
             StatisticsResultSink statistics) {
+        this(settings, sessions, sessionRegistry, regions, admissions, items, resetPort, clock,
+                statistics, session -> false);
+    }
+
+    /** Runtime restoration gate; existing constructors remain fail-closed. */
+    public BuildBattlePaperController(
+            BuildBattlePaperSettings settings,
+            SessionCoordinator sessions,
+            SessionRegistry sessionRegistry,
+            ProtectedRegionRegistry regions,
+            RegionAdmissionRegistry admissions,
+            TemporaryItemTagger items,
+            Optional<BuildBattleResetPort> resetPort,
+            Clock clock,
+            StatisticsResultSink statistics,
+            Predicate<PlayerSession> restorationReady) {
         this.settings = Objects.requireNonNull(settings, "settings");
         this.sessions = Objects.requireNonNull(sessions, "sessions");
         this.sessionRegistry = Objects.requireNonNull(sessionRegistry, "sessionRegistry");
@@ -117,14 +139,14 @@ public final class BuildBattlePaperController {
         this.resetPort = Objects.requireNonNull(resetPort, "resetPort");
         this.clock = Objects.requireNonNull(clock, "clock");
         this.statistics = Objects.requireNonNull(statistics, "statistics");
+        this.restorationReady = Objects.requireNonNull(restorationReady, "restorationReady");
     }
 
     public synchronized Status status() {
         boolean ready = settings.enabled() && !recoveryPending && settings.themes().themes().size() >= 3
                 && safeCommandInputs()
                 && resetPort.isPresent() && resetPort.orElseThrow().available() && validGeometry()
-                && (match == null || (match.phase() != BuildBattlePhase.RESETTING
-                        && match.phase() != BuildBattlePhase.RECOVERING));
+                && (match == null || match.phase() == BuildBattlePhase.WAITING);
         String message = !settings.enabled() ? "O Build Battle está fechado."
                 : recoveryPending ? "O Build Battle está fechado enquanto a recuperação da arena é revista."
                 : settings.themes().themes().size() < 3 ? "O Build Battle está fechado: são precisos três temas válidos."
@@ -139,21 +161,33 @@ public final class BuildBattlePaperController {
         return Optional.ofNullable(matchId);
     }
 
+    /** Reads the owned phase without re-running world readiness scans. */
+    public synchronized Optional<BuildBattlePhase> phaseForMatch(UUID expectedMatchId) {
+        return match != null && Objects.equals(matchId, expectedMatchId)
+                ? Optional.of(match.phase()) : Optional.empty();
+    }
+
     /** Queues a player; snapshots are taken only when the roster locks. */
     public synchronized AdmissionResult join(Player player, AdmissionRequest request) {
         Objects.requireNonNull(player, "player"); Objects.requireNonNull(request, "request");
         if (!settings.enabled()) return rejected("DISABLED", "O Build Battle está temporariamente fechado.");
+        if (recoveryPending || pendingReset != null || pendingResetFailed
+                || pendingResult != null || !pendingRecoveryPlayers.isEmpty()
+                || pendingRecoveryReason != null) {
+            return rejected("RECOVERY_PENDING",
+                    "O Build Battle continua fechado até a recuperação anterior terminar.");
+        }
+        if (match != null && match.phase() != BuildBattlePhase.WAITING) {
+            return rejected(match.phase() == BuildBattlePhase.RECOVERING
+                            || match.phase() == BuildBattlePhase.RESETTING
+                            ? "RECOVERY_PENDING" : "ROSTER_LOCKED",
+                    "A lista de jogadores já foi fechada para esta partida.");
+        }
         if (!status().ready()) return rejected("CONFIGURATION_UNAVAILABLE", "A arena ainda não está pronta.");
         if (!player.isOnline() || !player.isValid() || request.playerId() == null || !request.playerId().equals(player.getUniqueId()) || request.game() != GameKey.BUILD_BATTLE) {
             return rejected("PLAYER_INVALID", "Não foi possível validar a tua sessão.");
         }
         if (match == null) {
-            if (recoveryPending || pendingReset != null || pendingResetRecovery
-                    || pendingResult != null || !pendingRecoveryPlayers.isEmpty()
-                    || pendingRecoveryReason != null) {
-                return rejected("RECOVERY_PENDING",
-                        "O Build Battle continua fechado até a recuperação anterior terminar.");
-            }
             matchId = request.matchId();
             eventOperations.clear(); operationSequence = 0;
             match = new BuildBattleMatch(settings.config(), new ArrayList<>(settings.plots().keySet()));
@@ -161,8 +195,6 @@ public final class BuildBattlePaperController {
             phaseDeadline = clock.instant().plus(settings.countdown());
         } else if (!matchId.equals(request.matchId())) {
             return rejected("MATCH_BUSY", "A arena já está reservada para outra partida.");
-        } else if (match.phase() != BuildBattlePhase.WAITING) {
-            return rejected("ROSTER_LOCKED", "A lista de jogadores já foi fechada para esta partida.");
         }
         if (!match.join(player.getUniqueId(), new BuildBattleOperationId(matchId, ++operationSequence))) {
             return rejected("ALREADY_QUEUED", "Já estás na fila do Build Battle.");
@@ -172,26 +204,49 @@ public final class BuildBattlePaperController {
         return rejected("QUEUED", "Entraste na fila do Build Battle. Aguarda o início.");
     }
 
-    public synchronized void leave(UUID playerId) {
+    public synchronized AdmissionResult leave(UUID playerId) {
         Objects.requireNonNull(playerId, "playerId");
         Participant participant = participants.get(playerId);
-        if (participant == null || match == null) return;
+        if (participant == null || match == null) return rejected("NOT_PARTICIPATING", "Não estás numa partida do Build Battle.");
         if (match.phase() == BuildBattlePhase.WAITING) {
-            if (!match.leave(playerId, new BuildBattleOperationId(matchId, ++operationSequence))) return;
+            if (!match.leave(playerId, new BuildBattleOperationId(matchId, ++operationSequence)) ) {
+                return rejected("NOT_PARTICIPATING", "Não estás na fila do Build Battle.");
+            }
             participants.remove(playerId);
             if (participants.isEmpty()) { match.cancelWaiting(); match = null; matchId = null; phaseDeadline = null; eventOperations.clear(); operationSequence = 0; }
-            return;
+            return new AdmissionResult(AdmissionStatus.RECOVERED, "LEFT", "Saíste da fila do Build Battle.", Optional.empty());
         }
+        UUID leavingMatchId = matchId;
         recoverAll("PLAYER_LEFT");
+        PlayerSession session = sessionRegistry.findByPlayer(playerId)
+                .filter(value -> value.matchId().equals(leavingMatchId)).orElse(null);
+        if (session == null) {
+            return new AdmissionResult(AdmissionStatus.RECOVERED, "LEFT", "Saíste do Build Battle; o teu estado não foi alterado.", Optional.empty());
+        }
+        if (session.phase() == SessionPhase.CLOSED) {
+            return new AdmissionResult(AdmissionStatus.RECOVERED, "LEFT", "Saíste do Build Battle e o teu estado foi restaurado.", Optional.of(session));
+        }
+        if (session.phase() == SessionPhase.QUARANTINED) {
+            return new AdmissionResult(AdmissionStatus.QUARANTINED, "RECOVERY_PENDING",
+                    "Saíste da partida; o teu estado continua protegido enquanto o restauro é revisto.", Optional.of(session));
+        }
+        return new AdmissionResult(AdmissionStatus.REJECTED, "RECOVERY_PENDING",
+                "Saíste da partida; o teu estado continua protegido enquanto o restauro termina.", Optional.of(session));
     }
 
     public synchronized void tick(Instant now) {
         Objects.requireNonNull(now, "now");
-        if (!settings.enabled() || !validGeometry() || match == null) return;
-        if (pendingReset != null) {
+        if (pendingReset != null && !pendingResetFailed) {
             pollPendingReset(now);
             return;
         }
+        if (recoveryPending || pendingResult != null || pendingResetFailed) {
+            if (pendingResetFailed) return;
+            if (!pendingResetComplete) startPendingReset();
+            retryPendingRecovery();
+            return;
+        }
+        if (!settings.enabled() || !validGeometry() || match == null) return;
         if (phaseDeadline == null || now.isBefore(phaseDeadline)) return;
         try {
             switch (match.phase()) {
@@ -324,6 +379,36 @@ public final class BuildBattlePaperController {
     }
 
     /** True only for the owner of the registered plot region during building. */
+    /** Accepts only fresh, ordinary construction blocks from the native creative inventory. */
+    public synchronized void onCreativeInventory(InventoryCreativeEvent event) {
+        if (!(event.getWhoClicked() instanceof Player player)) return;
+        Participant participant = participants.get(player.getUniqueId());
+        if (participant == null || participant.sessionId() == null) return;
+        if (event.isCancelled()) return;
+        PlayerSession session = sessionRegistry.findById(participant.sessionId()).orElse(null);
+        if (participant.player() != player || session == null || session.phase() != SessionPhase.ACTIVE
+                || !restorationReady.test(session) || !canBuild(player, player.getLocation())
+                || event.getRawSlot() < 9 || event.getRawSlot() > 45) {
+            event.setCancelled(true);
+            return;
+        }
+        ItemStack cursor = event.getCursor();
+        if (cursor == null || cursor.isEmpty()) return;
+        if (!BuildBattleBlockPolicy.allows(cursor.getType())) {
+            event.setCancelled(true);
+            player.sendMessage(Component.text("Escolhe blocos de construção sem inventários, líquidos ou mecanismos.", NamedTextColor.RED));
+            return;
+        }
+        event.setCursor(items.tag(new ItemStack(cursor.getType(), Math.min(64, Math.max(1, cursor.getAmount()))),
+                participant.sessionId(), GameKey.BUILD_BATTLE));
+    }
+
+    private static void stopBuildingAbilities(Player player) {
+        player.setFlying(false);
+        player.setAllowFlight(false);
+        player.setGameMode(GameMode.ADVENTURE);
+    }
+
     public synchronized boolean canBuild(Player player, Location location) {
         if (match == null || match.phase() != BuildBattlePhase.BUILDING || player == null || location == null
                 || !sameWorld(location.getWorld(), settings.world())) return false;
@@ -338,19 +423,44 @@ public final class BuildBattlePaperController {
 
     public synchronized boolean allowTeleport(Player player, Location destination) {
         if (internalTeleport || match == null || player == null) return true;
-        return !participants.containsKey(player.getUniqueId()) || match.phase() == BuildBattlePhase.WAITING;
+        Participant participant = participants.get(player.getUniqueId());
+        if (participant == null || match.phase() == BuildBattlePhase.WAITING) return true;
+        if ((match.phase() != BuildBattlePhase.RECOVERING && match.phase() != BuildBattlePhase.RESETTING)
+                || participant.sessionId() == null || matchId == null) {
+            return false;
+        }
+        PlayerSession session = sessionRegistry.findById(participant.sessionId()).orElse(null);
+        return session != null && session.game() == GameKey.BUILD_BATTLE
+                && session.matchId().equals(matchId)
+                && session.playerId().equals(player.getUniqueId())
+                && (session.phase() == SessionPhase.RECOVERING || session.phase() == SessionPhase.RESTORING);
     }
 
     public synchronized boolean allowMove(Player player, Location destination) {
         if (match == null || player == null || !participants.containsKey(player.getUniqueId())) return true;
-        return match.phase() == BuildBattlePhase.WAITING || canBuild(player, destination);
+        if (match.phase() == BuildBattlePhase.WAITING) return true;
+        if (match.phase() == BuildBattlePhase.BUILDING) return canBuild(player, destination);
+        if (destination == null || !sameWorld(destination.getWorld(), settings.world())) return false;
+        Participant participant = participants.get(player.getUniqueId());
+        String regionId;
+        if (match.phase() == BuildBattlePhase.REVIEWING || match.phase() == BuildBattlePhase.VOTING) {
+            BuildBattlePlot plot = currentReviewPlot(player.getUniqueId());
+            if (plot == null) return false;
+            regionId = settings.plots().get(plot).regionId();
+        } else if (match.phase() == BuildBattlePhase.RESETTING || match.phase() == BuildBattlePhase.RECOVERING) {
+            regionId = settings.participantRegionId();
+        } else return false;
+        return participant.sessionId() != null && regions.find(regionId).filter(region -> region.bounds().contains(destination)).isPresent()
+                && admissions.permits(player.getUniqueId(), participant.sessionId(), regionId, clock.instant());
     }
 
     public synchronized void disconnect(UUID playerId) {
         Objects.requireNonNull(playerId, "playerId");
         if (!participants.containsKey(playerId) || match == null) return;
+        departingPlayers.add(playerId);
         if (match.phase() == BuildBattlePhase.WAITING) {
             leave(playerId);
+            departingPlayers.remove(playerId);
             return;
         }
         if (match.phase() != BuildBattlePhase.RECOVERING) {
@@ -387,6 +497,7 @@ public final class BuildBattlePaperController {
             queued.player().getInventory().setItemInMainHand(items.tag(new ItemStack(Material.BRICKS), session.sessionId(), GameKey.BUILD_BATTLE));
             sessions.activate(session.sessionId(), OperationIds.derive(queued.request().requestId(), "GAME_ACTIVE"), clock.instant());
             participants.put(queued.player().getUniqueId(), new Participant(queued.request(), queued.player(), session.sessionId(), assignment.plot()));
+            queued.player().setGameMode(GameMode.CREATIVE);
         }
         phaseDeadline = now.plus(settings.buildDuration());
     }
@@ -396,188 +507,136 @@ public final class BuildBattlePaperController {
         UUID terminalMatchId = Objects.requireNonNull(matchId, "matchId");
         Instant terminalStartedAt = startedAt;
         match.beginResetting();
-        if (settings.waitingSpawn() == null) { recoverAll("RESET_SPAWN_UNAVAILABLE"); return; }
-        for (Participant participant : participants.values()) if (participant.sessionId() != null) teleport(participant.player(), settings.waitingSpawn());
-        BuildBattleResetPort port = resetPort.filter(BuildBattleResetPort::available).orElse(null);
-        if (port == null) { recoverAll("RESET_UNAVAILABLE"); return; }
-        BuildBattleResetPort.ResetStart reset;
-        try {
-            reset = port.beginReset(terminalMatchId, settings.world());
-        } catch (RuntimeException failure) {
-            recoverAll("RESET_START_FAILED");
-            return;
-        }
-        if (reset.completed().isPresent()) {
-            if (!reset.completed().orElseThrow().successful()) { recoverAll("RESET_FAILED"); return; }
-            completeResultAfterReset(terminal, terminalMatchId, terminalStartedAt);
-            return;
-        }
-        pendingReset = reset.pending().orElseThrow();
         pendingResult = terminal;
         pendingResultStartedAt = terminalStartedAt;
-        pendingResetRecovery = false;
-        phaseDeadline = null;
-    }
-
-    private void completeResultAfterReset(BuildBattleResult terminal, UUID terminalMatchId, Instant terminalStartedAt) {
-        boolean restored = true;
-        for (Participant participant : participants.values()) {
-            if (participant.sessionId() != null) {
-                try {
-                    restored &= sessions.finishAndRestore(participant.sessionId(),
-                            OperationIds.derive(terminalMatchId, "RESULT_" + participant.player().getUniqueId()), "RESULT")
-                            .status() == AdmissionStatus.RECOVERED;
-                } catch (RuntimeException failure) {
-                    restored = false;
-                }
-                admissions.revokeSession(participant.sessionId());
+        pendingResetComplete = false;
+        pendingRecoveryRoot = terminalMatchId;
+        pendingRecoveryReason = "RESULT";
+        pendingRecoveryPlayers = Set.copyOf(participants.keySet());
+        recoveryPending = true;
+        participants.values().forEach(participant -> {
+            if (participant.sessionId() != null) admissions.revokeSession(participant.sessionId());
+        });
+        if (settings.waitingSpawn() != null) {
+            for (Participant participant : participants.values()) {
+                if (participant.sessionId() != null) moveToWaiting(participant);
             }
         }
-        if (!restored) { recoverAll("RESTORE_FAILED"); return; }
-        recordResult(terminalMatchId, terminal, terminalStartedAt, clock.instant());
-        match.completeReset();
-        clearControllerState();
+        phaseDeadline = null;
+        startPendingReset();
     }
 
     private void recoverAll(String reason) {
         if (match == null || matchId == null) return;
         UUID recoveryMatchId = matchId;
-        Set<UUID> recoveryPlayers = new LinkedHashSet<>(participants.keySet());
-        recoveryPlayers.addAll(match.roster());
-        recoveryPlayers.addAll(pendingRecoveryPlayers);
-        Set<PlayerSession> sessionsForMatch = sessionRegistry.findByMatch(recoveryMatchId);
-        sessionsForMatch.forEach(session -> recoveryPlayers.add(session.playerId()));
-        if (match.phase() != BuildBattlePhase.RECOVERING && match.phase() != BuildBattlePhase.IDLE && match.phase() != BuildBattlePhase.CLOSED) match.beginRecovery();
-        boolean restored = pendingRecoveryReason == null ? true : pendingRecoverySessionsRestored;
+        if (pendingRecoveryRoot == null) {
+            Set<UUID> recoveryPlayers = new LinkedHashSet<>(participants.keySet());
+            recoveryPlayers.addAll(match.roster());
+            sessionRegistry.findByMatch(recoveryMatchId).forEach(session -> recoveryPlayers.add(session.playerId()));
+            pendingRecoveryPlayers = Set.copyOf(recoveryPlayers);
+            pendingRecoveryRoot = recoveryMatchId;
+            pendingRecoveryReason = Objects.requireNonNull(reason, "reason");
+            pendingResult = null;
+            pendingResultStartedAt = null;
+            pendingResetComplete = false;
+            pendingResetFailed = false;
+        }
+        recoveryPending = true;
+        if (pendingResult == null && match.phase() != BuildBattlePhase.RECOVERING
+                && match.phase() != BuildBattlePhase.RESETTING && match.phase() != BuildBattlePhase.IDLE
+                && match.phase() != BuildBattlePhase.CLOSED) match.beginRecovery();
+        participants.values().forEach(participant -> {
+            if (participant.sessionId() != null) admissions.revokeSession(participant.sessionId());
+        });
         if (startedAt != null && settings.waitingSpawn() != null) {
             for (Participant participant : participants.values()) {
                 if (participant.sessionId() != null && participant.player().isOnline() && participant.player().isValid()) {
                     try {
-                        teleport(participant.player(), settings.waitingSpawn());
-                    } catch (RuntimeException failedTeleport) {
-                        restored = false;
-                    }
+                        moveToWaiting(participant);
+                    } catch (RuntimeException ignored) { /* Recovery remains pending and movement stays blocked. */ }
                 }
             }
         }
-        for (PlayerSession session : sessionsForMatch) {
-            if (session.phase() == SessionPhase.QUARANTINED) restored = false;
-            if (!session.phase().terminal()) {
-                try {
-                    restored &= sessions.recover(session.sessionId(), OperationIds.derive(recoveryMatchId, "RECOVER_" + session.playerId()), reason)
-                            .status() == AdmissionStatus.RECOVERED;
-                } catch (RuntimeException failure) {
-                    restored = false;
-                }
-            }
-            admissions.revokeSession(session.sessionId());
-        }
-        pendingRecoveryPlayers = Set.copyOf(recoveryPlayers);
-        pendingRecoveryReason = reason;
-        pendingRecoverySessionsRestored = restored;
-        pendingResult = null;
-        pendingResultStartedAt = null;
-        pendingResetRecovery = true;
-        if (pendingReset != null) {
-            recoveryPending = !restored;
-            phaseDeadline = null;
-            return;
-        }
-        if (!needsTemplateReset()) {
-            completeRecoveryAfterReset();
+        phaseDeadline = null;
+        if (pendingReset == null && !pendingResetComplete && !pendingResetFailed) startPendingReset();
+        retryPendingRecovery();
+    }
+
+    private void startPendingReset() {
+        if (pendingResetComplete || pendingResetFailed || pendingReset != null) return;
+        UUID root = pendingRecoveryRoot;
+        if (root == null || !needsTemplateReset()) {
+            pendingResetComplete = true;
+            retryPendingRecovery();
             return;
         }
         BuildBattleResetPort port = resetPort.filter(BuildBattleResetPort::available).orElse(null);
-        if (port == null) {
-            recoveryPending = true;
-            phaseDeadline = null;
-            return;
-        }
-        BuildBattleResetPort.ResetStart reset;
+        if (port == null) return;
         try {
-            reset = port.beginReset(recoveryMatchId, settings.world());
-        } catch (RuntimeException failure) {
-            recoveryPending = true;
-            phaseDeadline = null;
-            return;
+            BuildBattleResetPort.ResetStart reset = port.beginReset(root, settings.world());
+            if (reset.completed().isPresent()) {
+                if (reset.completed().orElseThrow().successful()) pendingResetComplete = true;
+                else pendingResetFailed = true;
+            } else pendingReset = reset.pending().orElseThrow();
+        } catch (RuntimeException ambiguousStart) {
+            // A throwing begin may have started mutation; do not start a duplicate reset.
+            pendingResetFailed = true;
         }
-        if (reset.completed().isPresent()) {
-            if (!reset.completed().orElseThrow().successful()) {
-                recoveryPending = true;
-                phaseDeadline = null;
-                return;
-            }
-            completeRecoveryAfterReset();
-            return;
-        }
-        pendingReset = reset.pending().orElseThrow();
-        recoveryPending = !restored;
-        phaseDeadline = null;
     }
 
     private void pollPendingReset(Instant now) {
         BuildBattleResetPort port = resetPort.filter(BuildBattleResetPort::available).orElse(null);
-        if (port == null) {
-            pendingReset = null;
-            if (pendingResetRecovery) {
-                recoveryPending = true;
-                phaseDeadline = null;
-            } else {
-                recoverAll("RESET_UNAVAILABLE");
-            }
-            return;
-        }
+        if (port == null) return;
         BuildBattleResetPort.ResetProgress progress;
         try {
             progress = port.pollReset(pendingReset);
         } catch (RuntimeException failure) {
-            pendingReset = null;
-            if (pendingResetRecovery) {
-                recoveryPending = true;
-                phaseDeadline = null;
-            } else {
-                recoverAll("RESET_POLL_FAILED");
-            }
             return;
         }
         if (!progress.complete()) return;
         if (!progress.successful()) {
-            pendingReset = null;
-            if (pendingResetRecovery) {
-                recoveryPending = true;
-                phaseDeadline = null;
-            } else {
-                recoverAll("RESET_FAILED");
-            }
+            pendingResetFailed = true;
             return;
         }
         pendingReset = null;
-        if (pendingResetRecovery) {
-            completeRecoveryAfterReset();
-        } else {
-            BuildBattleResult result = Objects.requireNonNull(pendingResult, "pending result");
-            Instant resultStartedAt = Objects.requireNonNull(pendingResultStartedAt, "pending result start");
-            pendingResult = null;
-            pendingResultStartedAt = null;
-            completeResultAfterReset(result, Objects.requireNonNull(matchId, "matchId"), resultStartedAt);
-        }
+        pendingResetComplete = true;
+        retryPendingRecovery();
     }
 
-    private void completeRecoveryAfterReset() {
-        if (!pendingRecoverySessionsRestored) {
-            recoveryPending = true;
-            phaseDeadline = null;
-            return;
-        }
+    private void retryPendingRecovery() {
+        if (!recoveryPending || !pendingResetComplete || pendingResetFailed || pendingReset != null) return;
         UUID recoveryMatchId = Objects.requireNonNull(matchId, "matchId");
-        if (match != null && match.phase() == BuildBattlePhase.RECOVERING) match.completeRecovery();
-        if (!pendingRecoveryPlayers.isEmpty()) {
-            statistics.record(MatchResultFactory.noContest(recoveryMatchId, GameKey.BUILD_BATTLE,
-                    "build-battle-v1", "solo", startedAt, clock.instant(),
-                    pendingRecoveryReason == null ? "RECOVERY" : pendingRecoveryReason,
-                    pendingRecoveryPlayers));
+        boolean allClosed = true;
+        for (PlayerSession session : sessionRegistry.findByMatch(recoveryMatchId)) {
+            admissions.revokeSession(session.sessionId());
+            if (session.phase() == SessionPhase.CLOSED) continue;
+            allClosed = false;
+            if (session.phase() == SessionPhase.QUARANTINED || departingPlayers.contains(session.playerId())) continue;
+            boolean ready;
+            try { ready = restorationReady.test(session); }
+            catch (RuntimeException unavailable) { ready = false; }
+            if (!ready) continue;
+            try {
+                if (pendingResult != null) {
+                    sessions.finishAndRestore(session.sessionId(),
+                            OperationIds.derive(pendingRecoveryRoot, "RESULT_" + session.playerId()), "RESULT");
+                } else {
+                    sessions.recover(session.sessionId(),
+                            OperationIds.derive(pendingRecoveryRoot, "RECOVER_" + session.playerId()), pendingRecoveryReason);
+                }
+            } catch (RuntimeException ignored) { /* Retry with the same operation ID on tick. */ }
         }
-        recoveryPending = false;
+        allClosed = sessionRegistry.findByMatch(recoveryMatchId).stream().allMatch(s -> s.phase() == SessionPhase.CLOSED);
+        if (!allClosed) return;
+        if (pendingResult != null) {
+            recordResult(recoveryMatchId, pendingResult, Objects.requireNonNull(pendingResultStartedAt), clock.instant());
+            if (match != null && match.phase() == BuildBattlePhase.RESETTING) match.completeReset();
+        } else {
+            if (match != null && match.phase() == BuildBattlePhase.RECOVERING) match.completeRecovery();
+            if (!pendingRecoveryPlayers.isEmpty()) statistics.record(MatchResultFactory.noContest(recoveryMatchId,
+                    GameKey.BUILD_BATTLE, "build-battle-v1", "solo", startedAt, clock.instant(),
+                    pendingRecoveryReason == null ? "RECOVERY" : pendingRecoveryReason, pendingRecoveryPlayers));
+        }
         clearControllerState();
     }
 
@@ -622,13 +681,34 @@ public final class BuildBattlePaperController {
         pendingReset = null;
         pendingResult = null;
         pendingResultStartedAt = null;
-        pendingResetRecovery = false;
+        pendingResetComplete = false;
+        pendingResetFailed = false;
+        pendingRecoveryRoot = null;
         pendingRecoveryReason = null;
         pendingRecoveryPlayers = Set.of();
-        pendingRecoverySessionsRestored = false;
+        departingPlayers.clear();
     }
 
     private void teleport(Player player, Location destination) { internalTeleport = true; try { if (!player.teleport(destination.clone())) throw new IllegalStateException("TELEPORT_FAILED"); } finally { internalTeleport = false; } }
+    private void moveToWaiting(Participant participant) {
+        if (participant == null || participant.player() == null || participant.sessionId() == null
+                || match == null || matchId == null) return;
+        Player player = participant.player();
+        UUID playerId = player.getUniqueId();
+        if (departingPlayers.contains(playerId) || participants.get(playerId) != participant) return;
+        PlayerSession session = sessionRegistry.findById(participant.sessionId()).orElse(null);
+        if (session == null || session.game() != GameKey.BUILD_BATTLE
+                || !session.matchId().equals(matchId) || !session.playerId().equals(playerId)
+                || session.phase() != SessionPhase.ACTIVE) return;
+
+        stopBuildingAbilities(player);
+        Instant now = clock.instant();
+        admissions.revokeSession(participant.sessionId());
+        admissions.issue(new RegionAdmissionToken(UUID.randomUUID(), participant.sessionId(),
+                playerId, settings.participantRegionId(), now,
+                now.plus(settings.tokenLifetime())));
+        teleport(player, settings.waitingSpawn());
+    }
     private BuildBattleOperationId eventOperation(UUID eventId) { Objects.requireNonNull(eventId); return eventOperations.computeIfAbsent(eventId, ignored -> new BuildBattleOperationId(matchId, ++operationSequence)); }
     private boolean validGeometry() {
         if (settings.world() == null || settings.waitingSpawn() == null) return false;
@@ -676,6 +756,7 @@ public final class BuildBattlePaperController {
             if (!participant.player().isOnline() || !participant.player().isValid()) {
                 throw new IllegalStateException("PLAYER_OFFLINE");
             }
+            stopBuildingAbilities(participant.player());
             List<BuildBattlePlot> targets = reviewTargets(participant.player().getUniqueId());
             if (targets.isEmpty()) throw new IllegalStateException("NO_REVIEW_TARGETS");
             reviewIndexes.put(participant.player().getUniqueId(), 0);
@@ -692,6 +773,7 @@ public final class BuildBattlePaperController {
         BuildBattlePaperSettings.PlotSettings target = settings.plots().get(plot);
         if (target == null) throw new IllegalStateException("PLOT_UNAVAILABLE");
         Instant now = clock.instant();
+        admissions.revokeSession(participant.sessionId());
         admissions.issue(new RegionAdmissionToken(UUID.randomUUID(), participant.sessionId(),
                 participant.player().getUniqueId(), target.regionId(), now,
                 now.plus(settings.tokenLifetime())));

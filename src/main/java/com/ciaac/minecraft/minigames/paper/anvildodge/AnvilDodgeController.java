@@ -21,6 +21,7 @@ import com.ciaac.minecraft.minigames.runtime.SessionRegistry;
 import com.ciaac.minecraft.minigames.statistics.MatchResult;
 import com.ciaac.minecraft.minigames.statistics.recording.MatchResultFactory;
 import com.ciaac.minecraft.minigames.statistics.recording.StatisticsResultSink;
+import com.ciaac.minecraft.minigames.paper.isolation.AnvilHazardOwnership;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
@@ -30,9 +31,9 @@ import java.util.Objects;
 import java.util.OptionalInt;
 import java.util.Set;
 import java.util.UUID;
+import java.util.function.Predicate;
 import org.bukkit.Location;
 import org.bukkit.Material;
-import org.bukkit.NamespacedKey;
 import org.bukkit.entity.ArmorStand;
 import org.bukkit.entity.Player;
 import org.bukkit.event.player.PlayerMoveEvent;
@@ -50,8 +51,16 @@ public final class AnvilDodgeController {
     private final ProtectedRegionRegistry regions;
     private final Clock clock;
     private final StatisticsResultSink statistics;
-    private final NamespacedKey hazardKey;
+    private final Predicate<PlayerSession> restorationReady;
+    private AnvilHazardOwnership hazardOwnership;
     private final Set<ArmorStand> hazards = new LinkedHashSet<>();
+    private final Set<UUID> departingPlayers = new LinkedHashSet<>();
+    private boolean recoveryPending;
+    private boolean restoringResult;
+    private UUID recoveryRoot;
+    private String recoveryReason;
+    private Set<UUID> recoveryParticipants = Set.of();
+    private AnvilDodgeResult recoveryResult;
     private long operationSequence;
     private Instant waveStarted;
     private int renderedWave;
@@ -70,6 +79,15 @@ public final class AnvilDodgeController {
                                 SessionCoordinator sessions, SessionRegistry sessionRegistry,
                                 RegionAdmissionRegistry admissions, ProtectedRegionRegistry regions,
                                 Clock clock, Plugin plugin, StatisticsResultSink statistics) {
+        this(matchId, game, settings, sessions, sessionRegistry, admissions, regions, clock, plugin,
+                statistics, session -> false);
+    }
+
+    public AnvilDodgeController(UUID matchId, AnvilDodgeGame game, AnvilDodgePaperSettings settings,
+                                SessionCoordinator sessions, SessionRegistry sessionRegistry,
+                                RegionAdmissionRegistry admissions, ProtectedRegionRegistry regions,
+                                Clock clock, Plugin plugin, StatisticsResultSink statistics,
+                                Predicate<PlayerSession> restorationReady) {
         this.matchId = Objects.requireNonNull(matchId, "matchId");
         this.game = Objects.requireNonNull(game, "game");
         this.settings = Objects.requireNonNull(settings, "settings");
@@ -79,12 +97,23 @@ public final class AnvilDodgeController {
         this.regions = Objects.requireNonNull(regions, "regions");
         this.clock = Objects.requireNonNull(clock, "clock");
         this.statistics = Objects.requireNonNull(statistics, "statistics");
-        this.hazardKey = new NamespacedKey(Objects.requireNonNull(plugin, "plugin"), "anvil-dodge-hazard");
+        this.restorationReady = Objects.requireNonNull(restorationReady, "restorationReady");
+        Objects.requireNonNull(plugin, "plugin");
+    }
+
+    public synchronized void hazardOwnership(AnvilHazardOwnership ownership) {
+        if (hazardOwnership != null || game.phase() != AnvilDodgePhase.DISABLED
+                || !sessionRegistry.findByMatch(matchId).isEmpty())
+            throw new IllegalStateException("Anvil native ownership must be supplied before admission");
+        hazardOwnership = Objects.requireNonNull(ownership);
     }
 
     public synchronized AdmissionResult join(Player player, AdmissionRequest request, RegionAdmissionToken token) {
         if (!settings.enabled()) return rejected("DISABLED", "A Fuga às Bigornas está temporariamente fechada.");
         Objects.requireNonNull(player, "player"); Objects.requireNonNull(request, "request"); Objects.requireNonNull(token, "token");
+        if (recoveryPending || (game.phase() != AnvilDodgePhase.DISABLED && game.phase() != AnvilDodgePhase.WAITING)) {
+            return rejected("MATCH_UNAVAILABLE", "A partida já começou ou está a terminar a recuperação.");
+        }
         Instant now = clock.instant();
         if (!ready(player, request, token, now)) return rejected("CONFIGURATION_UNAVAILABLE", "A arena ainda não está pronta.");
         admissions.issue(token);
@@ -113,34 +142,55 @@ public final class AnvilDodgeController {
         PlayerSession session = sessionRegistry.findByPlayer(playerId).orElseThrow(() -> new IllegalArgumentException("No active session"));
         if (!session.matchId().equals(matchId)) throw new IllegalArgumentException("Session belongs to another match");
         recoverAll(rootOperationId, "PLAYER_LEFT");
+        if (session.phase() != SessionPhase.CLOSED) {
+            return new AdmissionResult(session.phase() == SessionPhase.QUARANTINED
+                    ? AdmissionStatus.QUARANTINED : AdmissionStatus.REJECTED,
+                    "RECOVERY_PENDING", "Saíste da partida; o teu estado continua protegido enquanto o restauro termina.",
+                    java.util.Optional.of(session));
+        }
         return new AdmissionResult(AdmissionStatus.RECOVERED, "LEFT", "Saíste da Fuga às Bigornas e o teu estado foi restaurado.", java.util.Optional.of(session));
     }
 
     public synchronized AnvilDodgePaperStatus status() {
-        boolean ready = settings.enabled() && settings.world() != null && validRegion();
-        String message = !settings.enabled() ? "A Fuga às Bigornas está fechada." : ready ? "A Fuga às Bigornas está disponível." : "A arena está fechada até a configuração ser validada.";
+        boolean joinPhase = game.phase() == AnvilDodgePhase.DISABLED || game.phase() == AnvilDodgePhase.WAITING;
+        boolean ready = settings.enabled() && settings.world() != null && hazardOwnership != null
+                && validRegion() && joinPhase && !recoveryPending;
+        String message = !settings.enabled() ? "A Fuga às Bigornas está fechada."
+                : settings.world() == null || !validRegion() ? "A arena está fechada até a configuração ser validada."
+                : ready ? "A Fuga às Bigornas está disponível."
+                : "A partida já começou ou está a terminar a recuperação.";
         return new AnvilDodgePaperStatus(settings.enabled(), ready, game.phase(), message);
     }
 
     public synchronized void tick(Instant now) {
+        if (recoveryPending) {
+            retryPendingRestoration();
+            return;
+        }
         if (!settings.enabled() || !validRegion()) return;
         if (game.phase() == AnvilDodgePhase.WAITING && game.roster().size() >= settings.config().minimumPlayers()) {
             game.start(now, nextOperation()); waveStarted = now; renderedWave = 0; impactResolved = false;
         }
         if (game.phase() == AnvilDodgePhase.RUNNING) {
-            if (renderedWave != game.wave()) { clearHazards(); renderHazards(); renderedWave = game.wave(); impactResolved = false; if (waveStarted == null) waveStarted = now; }
+            if (renderedWave != game.wave()) {
+                if (!clearHazards()) { recoverAll(UUID.randomUUID(), "HAZARD_CLEANUP_PENDING"); return; }
+                try { renderHazards(); }
+                catch (RuntimeException failure) { recoverAll(UUID.randomUUID(), "HAZARD_RENDER_FAILED"); return; }
+                renderedWave = game.wave(); impactResolved = false; if (waveStarted == null) waveStarted = now;
+            }
             animateHazards(now);
             if (!impactResolved && waveStarted != null
                     && !now.isBefore(waveStarted.plus(settings.config().waveDuration()))) {
                 impactResolved = true;
                 resolveImpact(now);
+                if (!hazards.isEmpty()) { recoverAll(UUID.randomUUID(), "HAZARD_CLEANUP_PENDING"); return; }
             }
             if (waveStarted != null && !now.isBefore(waveStarted.plus(settings.config().waveDuration()))) {
                 if (game.phase() == AnvilDodgePhase.RUNNING) game.completeWave(nextOperation());
                 waveStarted = now;
             }
         }
-        if (game.phase() == AnvilDodgePhase.FINISHING) { clearHazards(); restoreAll(UUID.nameUUIDFromBytes((matchId + ":ANVIL_RESULT").getBytes(java.nio.charset.StandardCharsets.UTF_8)), "RESULT"); }
+        if (game.phase() == AnvilDodgePhase.FINISHING) restoreAll(UUID.nameUUIDFromBytes((matchId + ":ANVIL_RESULT").getBytes(java.nio.charset.StandardCharsets.UTF_8)), "RESULT");
     }
 
     public synchronized void onMove(PlayerMoveEvent event) {
@@ -174,38 +224,90 @@ public final class AnvilDodgeController {
         }
     }
 
-    public synchronized void onDisconnect(UUID playerId, UUID rootOperationId) { leave(playerId, rootOperationId); }
+    public synchronized void onDisconnect(UUID playerId, UUID rootOperationId) {
+        Objects.requireNonNull(playerId, "playerId");
+        if (sessionRegistry.findByPlayer(playerId).filter(session -> session.matchId().equals(matchId)).isEmpty()) return;
+        departingPlayers.add(playerId);
+        recoverAll(rootOperationId, "PLAYER_DISCONNECTED");
+    }
 
-    public synchronized void shutdown(UUID rootOperationId) { clearHazards(); recoverAll(rootOperationId, "PLUGIN_DISABLED"); }
+    public synchronized void shutdown(UUID rootOperationId) { recoverAll(rootOperationId, "PLUGIN_DISABLED"); }
 
     private void recoverAll(UUID root, String reason) {
-        Set<UUID> participants = sessionRegistry.findByMatch(matchId).stream().map(PlayerSession::playerId).collect(java.util.stream.Collectors.toUnmodifiableSet());
-        if (game.phase() == AnvilDodgePhase.WAITING || game.phase() == AnvilDodgePhase.RUNNING) game.recover(nextOperation());
-        if (game.phase() == AnvilDodgePhase.FINISHING || game.phase() == AnvilDodgePhase.RECOVERING) game.close(nextOperation());
-        clearHazards();
-        boolean restored = true;
-        for (PlayerSession session : sessionRegistry.findByMatch(matchId)) {
-            if (!session.phase().terminal()) {
-                restored &= sessions.recover(session.sessionId(), OperationIds.derive(root, "RESTORE_" + session.playerId()), reason).status() == AdmissionStatus.RECOVERED;
-                admissions.revokeSession(session.sessionId());
+        if (!recoveryPending) {
+            if (game.phase() == AnvilDodgePhase.DISABLED || game.phase() == AnvilDodgePhase.CLOSED) return;
+            restoringResult = game.phase() == AnvilDodgePhase.FINISHING;
+            if (!restoringResult && game.phase() != AnvilDodgePhase.RECOVERING) {
+                game.recover(nextOperation());
             }
+            beginPendingRestoration(root, reason);
         }
-        if (game.phase() == AnvilDodgePhase.RECOVERING) game.close(nextOperation());
-        if (restored && !participants.isEmpty()) recordNoContest(participants, reason);
+        retryPendingRestoration();
     }
+
     private void restoreAll(UUID root, String reason) {
-        AnvilDodgeResult terminal = game.result().orElse(null);
-        Set<UUID> participants = sessionRegistry.findByMatch(matchId).stream().map(PlayerSession::playerId).collect(java.util.stream.Collectors.toUnmodifiableSet());
-        clearHazards();
+        if (!recoveryPending) {
+            restoringResult = true;
+            beginPendingRestoration(root, reason);
+        }
+        retryPendingRestoration();
+    }
+
+    private void beginPendingRestoration(UUID root, String reason) {
+        recoveryPending = true;
+        recoveryRoot = Objects.requireNonNull(root, "root");
+        recoveryReason = Objects.requireNonNull(reason, "reason");
+        recoveryResult = game.result().orElse(null);
+        Set<UUID> participants = new LinkedHashSet<>(game.roster());
+        sessionRegistry.findByMatch(matchId).forEach(session -> participants.add(session.playerId()));
+        recoveryParticipants = Set.copyOf(participants);
+        sessionRegistry.findByMatch(matchId).forEach(session -> admissions.revokeSession(session.sessionId()));
+    }
+
+    private void retryPendingRestoration() {
+        if (!recoveryPending || !clearHazards()) return;
         boolean restored = true;
         for (PlayerSession session : sessionRegistry.findByMatch(matchId)) {
-            if (!session.phase().terminal()) { restored &= sessions.finishAndRestore(session.sessionId(), OperationIds.derive(root, "FINISH_" + session.playerId()), reason).status() == AdmissionStatus.RECOVERED; admissions.revokeSession(session.sessionId()); }
+            if (session.phase() == SessionPhase.QUARANTINED) {
+                restored = false;
+            } else if (!session.phase().terminal()) {
+                if (departingPlayers.contains(session.playerId()) || !restorationReady.test(session)) {
+                    restored = false;
+                    continue;
+                }
+                try {
+                    AdmissionResult result = restoringResult
+                            ? sessions.finishAndRestore(session.sessionId(),
+                                    OperationIds.derive(recoveryRoot, "FINISH_" + session.playerId()), recoveryReason)
+                            : sessions.recover(session.sessionId(),
+                                    OperationIds.derive(recoveryRoot, "RESTORE_" + session.playerId()), recoveryReason);
+                    restored &= result.status() == AdmissionStatus.RECOVERED;
+                } catch (RuntimeException failure) {
+                    restored = false;
+                }
+            }
+            admissions.revokeSession(session.sessionId());
         }
-        if (game.phase() == AnvilDodgePhase.FINISHING) game.close(nextOperation());
-        if (restored && !participants.isEmpty()) {
-            if (terminal == null) recordNoContest(participants, reason);
-            else recordResult(terminal, participants);
+        if (!restored || !clearHazards()) return;
+        if (restoringResult) {
+            if (game.phase() == AnvilDodgePhase.FINISHING) game.close(nextOperation());
+            if (!recoveryParticipants.isEmpty()) {
+                if (recoveryResult == null) recordNoContest(recoveryParticipants, recoveryReason);
+                else recordResult(recoveryResult, recoveryParticipants);
+            }
+        } else {
+            if (game.phase() == AnvilDodgePhase.RECOVERING) game.close(nextOperation());
+            if (!recoveryParticipants.isEmpty()) recordNoContest(recoveryParticipants, recoveryReason);
         }
+        recoveryPending = false;
+        restoringResult = false;
+        recoveryRoot = null;
+        recoveryReason = null;
+        recoveryParticipants = Set.of();
+        recoveryResult = null;
+        waveStarted = null;
+        renderedWave = 0;
+        impactResolved = false;
     }
 
     private void recordResult(AnvilDodgeResult terminal, Set<UUID> participants) {
@@ -239,16 +341,26 @@ public final class AnvilDodgeController {
     }
 
     private void renderHazards() {
+        if (hazardOwnership == null) throw new IllegalStateException("Anvil native ownership is unavailable");
+        var owner = sessionRegistry.findByMatch(matchId).stream()
+                .filter(session -> session.phase() == SessionPhase.ACTIVE)
+                .sorted(java.util.Comparator.comparing(PlayerSession::sessionId)).findFirst().orElseThrow();
         var wave = game.plan().get(game.wave() - 1);
         for (int cell : wave.hazardCells()) {
             int x = cell % settings.floorWidth(); int z = cell / settings.floorWidth();
             Location location = settings.floorOrigin().clone().add(x + .5, 8, z + .5);
             ArmorStand stand = settings.world().spawn(location, ArmorStand.class, value -> {
                 value.setVisible(false); value.setMarker(true); value.setGravity(false); value.setInvulnerable(true); value.setPersistent(false);
-                value.getPersistentDataContainer().set(hazardKey, org.bukkit.persistence.PersistentDataType.STRING, matchId.toString());
                 value.getEquipment().setHelmet(new org.bukkit.inventory.ItemStack(Material.ANVIL));
+                hazardOwnership.beforeAdd(owner.sessionId(), value);
             });
             hazards.add(stand);
+            if (!stand.isInWorld()) {
+                hazardOwnership.cancelledBeforeAdd(stand);
+                hazards.remove(stand);
+                throw new IllegalStateException("Anvil marker insertion was cancelled");
+            }
+            hazardOwnership.afterAdd(stand);
             settings.world().spawnParticle(org.bukkit.Particle.DUST,
                     settings.floorOrigin().clone().add(x + .5, 1.05, z + .5), 12,
                     0.28, 0.03, 0.28, 0.0,
@@ -308,10 +420,35 @@ public final class AnvilDodgeController {
         }
         return OptionalInt.of(z * settings.floorWidth() + x);
     }
-    private void clearHazards() { hazards.removeIf(h -> { if (h != null && h.isValid()) h.remove(); return true; }); }
+    private boolean clearHazards() {
+        boolean cleared = true;
+        for (ArmorStand stand : new java.util.ArrayList<>(hazards)) {
+            if (stand == null) {
+                cleared = false;
+                continue;
+            }
+            try {
+                if (stand.isDead()) {
+                    hazards.remove(stand);
+                    continue;
+                }
+                if (!settings.world().equals(stand.getWorld())) {
+                    cleared = false;
+                    continue;
+                }
+                if (hazardOwnership == null) { cleared = false; continue; }
+                hazardOwnership.removeOwned(stand.getUniqueId());
+                if (stand.isDead()) hazards.remove(stand);
+                else cleared = false;
+            } catch (RuntimeException ambiguous) {
+                cleared = false;
+            }
+        }
+        return cleared && hazards.isEmpty();
+    }
     private void teleport(Player player, Location location) { internalTeleport = true; try { if (!player.teleport(location.clone(), PlayerTeleportEvent.TeleportCause.PLUGIN)) throw new IllegalStateException("teleport rejected"); } finally { internalTeleport = false; } }
     private boolean ready(Player player, AdmissionRequest request, RegionAdmissionToken token, Instant now) {
-        return player.isOnline() && player.getUniqueId().equals(request.playerId()) && request.game() == GameKey.ANVIL_DODGE
+        return hazardOwnership != null && player.isOnline() && player.getUniqueId().equals(request.playerId()) && request.game() == GameKey.ANVIL_DODGE
                 && request.matchId().equals(matchId) && token.playerId().equals(player.getUniqueId()) && token.sessionId().equals(request.sessionId())
                 && token.regionId().equals(settings.participantRegionId()) && token.validAt(now) && settings.world().isChunkLoaded(settings.start().getBlockX() >> 4, settings.start().getBlockZ() >> 4) && validRegion();
     }

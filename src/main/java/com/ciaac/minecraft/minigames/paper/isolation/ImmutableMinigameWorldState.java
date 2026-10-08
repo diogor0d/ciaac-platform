@@ -14,7 +14,7 @@ import java.io.IOException;
 import java.util.Arrays;
 import org.bukkit.Server;
 
-/** Read-only preservation of the immutable Sumo/Hot Potato protection policy.
+/** Read-only preservation of immutable Sumo, Hot Potato and Parkour protection policy.
  * These games create no world entities or blocks; this is not a world reset adapter. */
 final class ImmutableMinigameWorldState {
     private static final byte[] EMPTY = new byte[0];
@@ -81,6 +81,9 @@ final class ImmutableMinigameWorldState {
         } else if (game == GameKey.HOT_POTATO) {
             id = "hot-potato.arena";
             role = ProtectedRegionRole.GAME_WORLD_BOUNDARY;
+        } else if (game == GameKey.CHECKPOINT_PARKOUR) {
+            id = "checkpoint-parkour.course-boundary";
+            role = ProtectedRegionRole.PARTICIPANT_ONLY;
         } else throw new IllegalArgumentException("Unsupported immutable minigame");
         var owned = regions.all().stream().filter(region -> region.game() == game).toList();
         if (owned.size() != 1) throw new IllegalStateException("Immutable minigame needs one protection boundary");

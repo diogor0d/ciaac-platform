@@ -1,9 +1,23 @@
 # Campo de Tiro com Arco
 
-Estado em 2026-08-24 (endurecimento do código-fonte reconciliado):
+Última atualização: 2026-10-08.
 
-- `SOURCE-VERIFIED`: o domínio, o controlador, o assembler e o router de eventos estão presentes.
-- `UNVERIFIED`: a ligação Paper, as entidades de alvo e a entrega de apresentações ainda não foram validadas em execução.
+- `RUNTIME-VERIFIED`, com âmbito limitado, no candidato
+  `6792e1924d90214e3a7c26919eb3cd0d0aaa83c16db0de38157f533129c1dc05`:
+  arco e projéteis nativos terminaram em `VICTORY` / `COMPLETED`; alvo ausente
+  e lane ocupada foram recusados; saída, desconexão, timeout e crash frio após
+  disparo foram exercitados. Os 18 campos Paper foram restaurados exatamente;
+  após o crash, a seta confirmada foi removida e o UUID exato estava ausente.
+  Paper descartável, AuthMe e peers sintéticos autenticados.
+- `UNVERIFIED`: aceitação de instalações reais, pontuação ampliada, ações
+  recusadas adicionais e condições de crash além das descritas.
+
+Evidência histórica, não estado do candidato atual:
+
+- `SOURCE-VERIFIED`: domínio, controlador, assembler, router de eventos e verificação Paper de prontidão dos alvos.
+- `LOCAL-NATIVE-ACCEPTANCE`: no candidato `7ff23154714b105720bf1fd376deed69af4f0897267a880395f4733d331a6dd2`, dois disparos nativos deram `VICTORY` / `COMPLETED`; timeout de 30 segundos deu `NO_CONTEST` / `TIMEOUT`; saída, desconexão e quit seguido de reautenticação foram exercitados. Os 18 campos Paper foram restaurados exatamente em cada percurso. Alvo ausente e lane ocupada foram recusados sem alterar estado.
+- `LOCAL-CRASH-RECOVERY`: o arco foi puxado/libertado com input nativo e o UUID exato da seta própria foi confirmado vivo e `CONFIRMED` antes do `save-all` e SIGKILL do subprocesso Paper. Após reinício e autenticação AuthMe normal com a mesma password, os 18 campos foram restaurados exatamente, a entidade ficou `REMOVED` e o UUID exato já não existia. O caso confirma este cenário delimitado de seta lançada.
+- O candidato histórico passou 563 testes (562 aprovados, um ignorado, zero falhas/erros).
 
 ## Experiência do jogador e comandos
 
@@ -39,18 +53,21 @@ servidor coincide com a configuração.
 ## Alvos e segurança dos projéteis
 
 As entidades de alvo são entradas pertencentes ao operador e resolvidas pelo
-servidor. A política exige uma tag de scoreboard exata:
+servidor. Cada lane requer pelo menos um `ArmorStand` válido, vivo e
+não-marker por banda, com uma tag de scoreboard exata:
 
 ```text
 ciaac-archery-target:<configured-target-id>:<score-band>
 ```
 
 `<configured-target-id>` tem de coincidir com
-`lanes.<id>.target-id`; a banda tem de ser uma chave de `target-scores`
-(normalmente `bullseye`, `inner`, `middle` ou `outer`). A entidade tem
-de estar na região registada da lane. Tags ausentes, estrangeiras, ambíguas ou
-fora da região fecham a operação; o projétil é limpo. A ponte entre tags e
-entidades Paper em funcionamento permanece `UNVERIFIED`.
+`lanes.<id>.target-id`; as bandas requeridas são `bullseye`, `inner`, `middle`
+e `outer`. Cada entidade tem de estar na região imutável da lane. São aceites
+várias entidades válidas para a mesma banda; tipo errado, entidade inválida,
+tag de banda ambígua/desconhecida ou alvo fora da região fecha a prontidão.
+`bow-material` tem de ser `BOW`. O ensaio local confirmou a recusa sem alterar
+estado quando faltava um alvo; dois disparos nativos reais completaram a
+partida.
 
 O controlador expõe as marcas tipadas e as chaves PDC
 (`ciaac:archery-session`, `ciaac:archery-lane`,
@@ -109,3 +126,12 @@ de projéteis, limpeza, cancelamento de dano, morte, saída, expulsão e
 desconexão. Comandos e apresentações expõem apenas o estado; as tags dos alvos
 e a pontuação imutável do servidor permanecem autoritativas. A entrega
 DiscordSRV e o registo de listeners Paper continuam sem verificação de execução.
+
+## Pontuação nativa dos quatro bands — 2026-10-08
+
+No JAR final `0741a3b…`, `archery-bands` fez quatro tentativas separadas com
+dois disparos reais em cada band. Bullseye/inner/middle/outer registaram scores
+20/14/10/4, dois shots por tentativa, dois bullseyes só na primeira e zero nas
+restantes. Os resultados foram `VICTORY` / `COMPLETED` e cada tentativa
+restaurou exatamente os 18 campos originais. Não foram injetados impactos ou
+resultados. Ver a [matriz datada](all-minigames-validation.md).

@@ -1,22 +1,29 @@
 # Estado no código-fonte dos modos futuros
 
-Estado em 2026-08-22:
+Última atualização: 2026-10-08.
 
 - `SOURCE-VERIFIED`: os seis modos abaixo têm domínio puro, configuração
   validada, controlador/módulo Paper, isolamento de sessões, encaminhamento de
   eventos e código-fonte de estatísticas neste checkout. `ModuleCatalog`
   classifica-os como implementados no código-fonte.
-- `UNVERIFIED`: a presença do código-fonte não abre a admissão. Não há
-  implantação, evidência de aceitação Paper em execução nem teste Paper
-  descartável neste registo. Os testes Maven completos e Paper descartável ficam
-  adiados.
+- `RUNTIME-VERIFIED`, com âmbito local e delimitado: a matriz datada regista
+  ensaios nativos dos nove modos; os seis deste catálogo têm percursos locais
+  atuais, incluindo a repetição de fronteiras de Parkour e bandas de pontuação
+  de Archery no JAR final `0741a3b…`. O JAR `0741a3b…` passou 648 testes
+  (647 aprovados, um skip preexistente, zero falhas/erros); comparado com
+  `6792e19…`, só mudou a classe de ajuda da consola. Estas provas não aceitam
+  instalações de produção nem todas as variantes de cada modo.
+- `UNVERIFIED`: implantação, instalações reais, cobertura completa de
+  variantes e entrega de apresentações externas. A configuração e os ensaios
+  locais não abrem a admissão em produção.
 
 
-Atualização em 2026-10-07: Sumo tem aceitação local limitada, incluindo input,
-knockback/vitória e restauro autenticado; ver
-[verificação funcional](functional-verification.md). Os testes Maven completos
-passaram. Os outros cinco modos deste catálogo mantêm os gates de aceitação
-Paper/mundo indicados abaixo. A data de 2026-08-22 conserva o contexto histórico.
+Registo histórico: em 2026-08-22 não havia evidência de Paper descartável neste
+documento; em 2026-10-07 só Sumo tinha a aceitação local descrita aqui. Esses
+estados foram superados pelos ensaios posteriores, sem apagar o histórico.
+Consulte a [matriz datada de validação](all-minigames-validation.md) e a
+[verificação funcional](functional-verification.md) para candidatos e cenários
+exatos.
 
 ## Catálogo e política de localização
 
@@ -88,9 +95,11 @@ ciaac-archery-target:<configured-target-id>:<score-band>
 
 O ID tem de corresponder a `lanes.<id>.target-id`, a banda tem de existir em
 `target-scores.*`, e a entidade tem de estar na região dessa pista. A política de
-eventos regista o alvo e o controlador valida a sua pontuação no servidor. A
-ponte ativa entre tag do scoreboard e entidade permanece `UNVERIFIED`.
-Consulte
+eventos regista o alvo e o controlador valida a sua pontuação no servidor. O
+bridge Paper entre tag do scoreboard e entidade está ligado ao runtime. A
+aceitação nativa no JAR final `0741a3b…` confirmou os quatro score bands
+(`bullseye`, `inner`, `middle`, `outer`) com pontuações exatas; outras ações
+recusadas e instalações reais permanecem por validar. Consulte
 [`archery-range.md`](archery-range.md).
 
 ### Fuga às Bigornas
@@ -128,8 +137,11 @@ terminais/de recuperação. O encaminhador cancela mortes de corredores ativos
 antes de drops/experiência, rejeita pérolas do Ender e alterações diretas do
 terreno, e aceita apenas foguetes identificados e contabilizados pelo servidor.
 A implementação atual rejeita a configuração quando `concurrent-runners` não é
-um; a física de voo e das entidades em execução permanece
-`UNVERIFIED`. Consulta [`elytra-rings.md`](elytra-rings.md).
+um. Voo, impulso, passagem de dois anéis e recuperação em cenários delimitados
+foram aceites num cliente Minecraft normal no Paper local; ordem inválida,
+limites adicionais de voo, outras variantes e instalações reais permanecem por
+validar. Consulta [`elytra-rings.md`](elytra-rings.md) e a
+[matriz datada](all-minigames-validation.md).
 
 ## Resultados, classificações e ecrãs partilhados
 
@@ -191,9 +203,10 @@ segredos nem instruções de implantação.
 
 ## Limites da evidência
 
-Os seis documentos de componente acima descrevem contratos atuais do código-fonte,
-e não um servidor implantado. Antes de permitir a admissão, executa as
-verificações Maven atuais e um teste Paper descartável que cubra entrada e
-saída, eventos duplicados, desconexão, recuperação após reinício ou encerramento,
-fuga de regiões, restauração de itens, identidade de alvos e perigos, libertação
-de chunks, idempotência das estatísticas e encaminhamento de comandos e ecrãs.
+Os seis documentos de componente acima descrevem contratos do código-fonte e
+evidência local delimitada; não descrevem um servidor implantado. A suite Maven
+do JAR final passou, e os cenários já aceites estão na matriz. Antes de qualquer
+decisão de produção, ainda são necessárias instalações reais e aceitação dos
+cenários/variantes por modo que a matriz identifica como pendentes, incluindo
+entrada/saída, recuperação, fronteiras, ações recusadas, física e apresentações
+onde aplicável.

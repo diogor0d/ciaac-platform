@@ -9,6 +9,7 @@ import net.kyori.adventure.text.event.ClickEvent;
 import net.kyori.adventure.key.Key;
 import org.cloudburstmc.nbt.NbtMap;
 import org.cloudburstmc.math.vector.Vector3d;
+import org.cloudburstmc.math.vector.Vector3i;
 import org.geysermc.mcprotocollib.network.*;
 import org.geysermc.mcprotocollib.network.event.session.*;
 import org.geysermc.mcprotocollib.network.factory.ClientNetworkSessionFactory;
@@ -17,13 +18,18 @@ import org.geysermc.mcprotocollib.protocol.*;
 import org.geysermc.mcprotocollib.protocol.codec.MinecraftCodec;
 import org.geysermc.mcprotocollib.protocol.data.game.entity.player.PositionElement;
 import org.geysermc.mcprotocollib.protocol.data.game.entity.player.Hand;
+import org.geysermc.mcprotocollib.protocol.data.game.entity.player.PlayerAction;
+import org.geysermc.mcprotocollib.protocol.data.game.entity.object.Direction;
 import org.geysermc.mcprotocollib.protocol.data.game.entity.type.EntityType;
+import org.geysermc.mcprotocollib.protocol.data.game.entity.player.GameMode;
+import org.geysermc.mcprotocollib.protocol.data.game.level.notify.GameEvent;
 import org.geysermc.mcprotocollib.protocol.packet.ingame.clientbound.*;
 import org.geysermc.mcprotocollib.protocol.packet.ingame.clientbound.entity.player.*;
 import org.geysermc.mcprotocollib.protocol.packet.ingame.clientbound.entity.*;
 import org.geysermc.mcprotocollib.protocol.packet.ingame.clientbound.title.*;
 import org.geysermc.mcprotocollib.protocol.packet.ingame.clientbound.level.*;
 import org.geysermc.mcprotocollib.protocol.packet.ingame.serverbound.*;
+import org.geysermc.mcprotocollib.protocol.packet.ingame.serverbound.inventory.*;
 import org.geysermc.mcprotocollib.protocol.packet.ingame.serverbound.level.*;
 import org.geysermc.mcprotocollib.protocol.packet.ingame.serverbound.player.*;
 import org.geysermc.mcprotocollib.protocol.packet.configuration.clientbound.ClientboundShowDialogConfigurationPacket;
@@ -48,6 +54,8 @@ public final class LocalArenaPeer {
  private static boolean flatFloorMotion;
  private static double fixtureFloorY,modelVelocityX,modelVelocityY,modelVelocityZ;
  private static int walkTicksRemaining;
+ private static int outgoingSequence=1;
+ private static boolean bowDrawn;
  private static double walkDirectionX,walkDirectionZ;
  private static boolean walkInputActive;
  private static boolean reportedPoseKnown;
@@ -55,6 +63,10 @@ public final class LocalArenaPeer {
  private static float reportedYaw,reportedPitch;
  private static int stationaryMoveTicks;
  private static int ownEntityId=-1,ownPeerIndex;
+ private static volatile GameMode nativeGameMode;
+ private static volatile String nativeWorldName="";
+ private static volatile boolean nativeCreativeAbility;
+ private static volatile int selectedHotbarSlot=-1;
  private static String carrierTitle="OTHER";
  private static int carrierPeerIndex;
  private static final Map<Integer,FixtureEntity> fixtureEntities=new HashMap<>();
@@ -88,6 +100,21 @@ public final class LocalArenaPeer {
      pendingRegisterConfirmation=false;
      joined=true;System.out.println("Peer joined native GAME state; provider authentication is still required.");
      ownEntityId=login.getEntityId();
+     observeBuildWorld(login.getCommonPlayerSpawnInfo());
+     nativeCreativeAbility=false;
+     selectedHotbarSlot=-1;
+    } else if(packet instanceof ClientboundRespawnPacket respawn){
+     observeBuildWorld(respawn.getCommonPlayerSpawnInfo());
+     nativeCreativeAbility=false;
+     selectedHotbarSlot=-1;
+     positionKnown=false;
+    } else if(packet instanceof ClientboundGameEventPacket gameEvent
+      && gameEvent.getNotification()==GameEvent.CHANGE_GAME_MODE){
+     nativeGameMode=gameEvent.getValue() instanceof GameMode mode?mode:null;
+    } else if(packet instanceof ClientboundPlayerAbilitiesPacket abilities){
+     nativeCreativeAbility=abilities.isCreative();
+    } else if(packet instanceof ClientboundSetHeldSlotPacket selected){
+     selectedHotbarSlot=selected.getSlot()>=0&&selected.getSlot()<=8?selected.getSlot():-1;
     } else if(packet instanceof ClientboundShowDialogConfigurationPacket dialog){
      pendingRegisterConfirmation=false;
      pendingAuthDialog=classifyAuthDialog(dialog.getDialog());
@@ -101,6 +128,7 @@ public final class LocalArenaPeer {
      pendingRegisterConfirmation=false;
     } else if(packet instanceof ClientboundPlayerPositionPacket pos){
      synchronized(poseLock){
+      releaseDrawnBow(session);
       var relative=pos.getRelatives();var p=pos.getPosition();
       x=p.getX()+(relative.contains(PositionElement.X)?x:0);y=p.getY()+(relative.contains(PositionElement.Y)?y:0);z=p.getZ()+(relative.contains(PositionElement.Z)?z:0);
       nativeX=x;nativeY=y;nativeZ=z;nativeTeleportPackets++;
@@ -116,6 +144,8 @@ public final class LocalArenaPeer {
      session.send(ServerboundPlayerLoadedPacket.INSTANCE);
      System.out.println("Native teleport acknowledged.");
     } else if(packet instanceof ClientboundAddEntityPacket entity){
+     if(entity.getType()==EntityType.ARROW)
+      System.out.println("Native fixture arrow observed; spawn="+List.of(entity.getX(),entity.getY(),entity.getZ()));
      int index=fixturePeerIndex(entity.getUuid());
      if(index>0 && index!=ownPeerIndex && entity.getType()==EntityType.PLAYER){
       synchronized(poseLock){fixtureEntities.put(index,new FixtureEntity(entity.getEntityId(),entity.getX(),entity.getY(),entity.getZ()));}
@@ -153,14 +183,20 @@ public final class LocalArenaPeer {
     } else if(packet instanceof ClientboundSystemChatPacket chat){
      // Do not print arbitrary server chat or reflected commands/passwords.
      Component content=chat.getContent();
-     String code=containsReadyPrompt(content,null)?"ARENA_READY_PROMPT":classifyText(plain(content));
+     String code=containsReadyPrompt(content,null)?"ARENA_READY_PROMPT"
+      :containsBuildBattleThemeOption(content,null)?"BUILD_BATTLE_THEME_OPTION":classifyText(plain(content));
      System.out.println("Native system message received; classification="+code);
     }
    }
-   @Override public void disconnected(DisconnectedEvent event){joined=false;positionKnown=false;System.out.println("Peer disconnected; cause="+(event.getCause()==null?"none":event.getCause().getClass().getSimpleName()));expiry.shutdownNow();}
+   @Override public void disconnected(DisconnectedEvent event){
+   try{releaseDrawnBow(client);}catch(RuntimeException ignored){}
+    synchronized(poseLock){bowDrawn=false;walkInputActive=false;walkTicksRemaining=0;joined=false;positionKnown=false;}
+    nativeGameMode=null;nativeWorldName="";nativeCreativeAbility=false;selectedHotbarSlot=-1;
+    System.out.println("Peer disconnected; cause="+(event.getCause()==null?"none":event.getCause().getClass().getSimpleName()));expiry.shutdownNow();
+   }
    @Override public void packetError(PacketErrorEvent event){System.err.println("Packet error: "+event.getCause().getClass().getSimpleName());}
   });
-  expiry.schedule(()->client.disconnect(Component.text("Local fixture expiry")),15,TimeUnit.MINUTES);
+  expiry.schedule(()->disconnectFixture(client,"Local fixture expiry"),15,TimeUnit.MINUTES);
   expiry.scheduleAtFixedRate(()->{if(client.isConnected()&&joined){tickFlatFloorMotion(client);client.send(ServerboundClientTickEndPacket.INSTANCE);}},50,50,TimeUnit.MILLISECONDS);
   try(var reader=new BufferedReader(new InputStreamReader(System.in))){
    client.connect();
@@ -175,8 +211,15 @@ public final class LocalArenaPeer {
      continue;
     }
     if(command.startsWith("attack ")||command.startsWith("interact ")){sendFixtureAction(client,command);continue;}
+    if(command.equals("bow")||command.startsWith("bow ")){sendFixtureBowAction(client,command);continue;}
+    if(command.equals("look")||command.startsWith("look ")){sendFixtureLook(client,command);continue;}
     if(command.startsWith("move ")){sendFixtureMove(client,command);continue;}
     if(command.startsWith("walk ")){sendFixtureWalk(client,command);continue;}
+    if(command.equals("creative-slot")||command.startsWith("creative-slot ")){
+     sendFixtureCreativeSlot(client,command);continue;
+    }
+    if(command.equals("place")||command.startsWith("place ")){sendFixtureBlockPlace(client,command);continue;}
+    if(command.equals("break")||command.startsWith("break ")){sendFixtureBlockBreak(client,command);continue;}
     if(command.equals("flat-floor-motion on")||command.equals("flat-floor-motion off")){
      setFlatFloorMotion(client,command.endsWith(" on"),null);
      System.out.println("Explicit fixture motion model="+(flatFloorMotion?"FLAT_FLOOR_APPROXIMATION":"NONE"));continue;
@@ -189,12 +232,16 @@ public final class LocalArenaPeer {
      setFlatFloorMotion(client,true,floorY);
      System.out.println("Explicit fixture motion model="+(flatFloorMotion?"FLAT_FLOOR_APPROXIMATION":"NONE"));continue;
     }
-    if(!command.matches("(?:register|login|coliseu|minijogos|passaporte|sumo|batataquente)(?: .*)?"))throw new IllegalArgumentException("Only explicit fixture auth/game commands are allowed");
+    if(!isAllowedFixtureCommand(command))throw new IllegalArgumentException("Only explicit fixture auth/game commands are allowed");
     if(!client.isConnected()||!joined)throw new IllegalStateException("Peer has not reached the native game state");
     client.send(new ServerboundChatCommandPacket(command));
     System.out.println("Explicit fixture command sent; arguments withheld.");
    }
-  }finally{client.disconnect(Component.text("Local fixture complete"));expiry.shutdownNow();}
+  }finally{disconnectFixture(client,"Local fixture complete");expiry.shutdownNow();}
+ }
+
+ private static boolean isAllowedFixtureCommand(String command) {
+  return command.matches("(?:register|login|coliseu|minijogos|passaporte|sumo|batataquente|buildbattle|parkour|arco|bigornas|cores|elytra)(?: .*)?");
  }
 
  private static int fixturePeerIndex(UUID uuid) {
@@ -212,6 +259,51 @@ public final class LocalArenaPeer {
 
  private static void requireGamePose(ClientSession client) {
   if(!client.isConnected()||!joined||!positionKnown)throw new IllegalStateException("No native game pose is available");
+ }
+
+ private static boolean isBowFixtureCommand(String command) {
+  return "bow draw".equals(command)||"bow release".equals(command);
+ }
+
+ private static void sendFixtureBowAction(ClientSession client,String command) {
+  if(!isBowFixtureCommand(command))throw new IllegalArgumentException("Expected bow draw or bow release");
+  requireGamePose(client);
+  synchronized(poseLock){
+   if(!Float.isFinite(yaw)||!Float.isFinite(pitch))throw new IllegalStateException("Current native yaw and pitch must be finite");
+   if(!Double.isFinite(x)||!Double.isFinite(y)||!Double.isFinite(z))throw new IllegalStateException("Current native position must be finite");
+   if(command.equals("bow draw")){
+    if(bowDrawn)throw new IllegalStateException("The fixture bow is already drawn");
+    client.send(new ServerboundUseItemPacket(Hand.MAIN_HAND,nextOutgoingSequence(),yaw,pitch));
+    bowDrawn=true;
+   }else{
+    if(!bowDrawn)throw new IllegalStateException("The fixture bow is not drawn");
+    releaseDrawnBow(client);
+   }
+  }
+  System.out.println("Explicit native bow packet sent; action="+(command.equals("bow draw")?"DRAW":"RELEASE"));
+ }
+
+ private static void releaseDrawnBow(Session client) {
+  synchronized(poseLock){
+   if(!bowDrawn)return;
+   if(client.isConnected()&&positionKnown&&Double.isFinite(x)&&Double.isFinite(y)&&Double.isFinite(z)){
+    double bx=Math.floor(x),by=Math.floor(y),bz=Math.floor(z);
+    if(bx<Integer.MIN_VALUE||bx>Integer.MAX_VALUE||by<Integer.MIN_VALUE||by>Integer.MAX_VALUE||bz<Integer.MIN_VALUE||bz>Integer.MAX_VALUE)
+     throw new IllegalStateException("Current native position cannot be encoded as a block position");
+    client.send(new ServerboundPlayerActionPacket(PlayerAction.RELEASE_USE_ITEM,
+      Vector3i.from((int)bx,(int)by,(int)bz),Direction.DOWN,nextOutgoingSequence()));
+   }
+   bowDrawn=false;
+  }
+ }
+
+ private static int nextOutgoingSequence() {
+  if(outgoingSequence==Integer.MAX_VALUE)throw new IllegalStateException("Native interaction sequence is exhausted");
+  return outgoingSequence++;
+ }
+
+ private static void disconnectFixture(ClientSession client,String reason) {
+  try{releaseDrawnBow(client);}finally{client.disconnect(Component.text(reason));}
  }
 
  private static void sendFixtureAction(ClientSession client,String command) {
@@ -246,6 +338,30 @@ public final class LocalArenaPeer {
   System.out.println("Explicit bounded native horizontal move sent.");
  }
 
+ private static void sendFixtureLook(ClientSession client,String command) {
+  String[] parts=command.split(" ",-1);
+  if(parts.length!=3)throw new IllegalArgumentException("Expected look <yaw -360..360> <pitch -90..90>");
+  double requestedYaw,requestedPitch;
+  try{
+   requestedYaw=Double.parseDouble(parts[1]);
+   requestedPitch=Double.parseDouble(parts[2]);
+  }catch(NumberFormatException invalid){
+   throw new IllegalArgumentException("Look yaw and pitch must be finite numbers",invalid);
+  }
+  if(!Double.isFinite(requestedYaw)||requestedYaw < -360.0||requestedYaw > 360.0
+    ||!Double.isFinite(requestedPitch)||requestedPitch < -90.0||requestedPitch > 90.0)
+   throw new IllegalArgumentException("Look yaw must be -360..360 and pitch -90..90");
+  requireGamePose(client);
+  synchronized(poseLock){
+   if(walkTicksRemaining>0||walkInputActive)
+    throw new IllegalStateException("Look cannot be mixed with an active bounded walk");
+   yaw=(float)requestedYaw;
+   pitch=(float)requestedPitch;
+   sendNativeMovement(client,false);
+  }
+  System.out.println("Explicit native look sent.");
+ }
+
  private static void sendFixtureWalk(ClientSession client,String command) {
   String[] parts=command.split(" ",-1);
   if(parts.length!=3||!parts[2].matches("[0-9]{1,3}"))throw new IllegalArgumentException("Expected walk <east|west|north|south> <ticks 1..100>");
@@ -268,6 +384,132 @@ public final class LocalArenaPeer {
    client.send(new ServerboundPlayerInputPacket(true,false,false,false,false,false,false));
   }
   System.out.println("Explicit bounded native forward input sent; ticks="+ticks);
+ }
+
+ /** Accepts only the exact dimension/game-mode state supplied by the local server. */
+ private static void observeBuildWorld(org.geysermc.mcprotocollib.protocol.data.game.entity.player.PlayerSpawnInfo spawn) {
+  if(spawn==null){nativeGameMode=null;nativeWorldName="";return;}
+  nativeGameMode=spawn.getGameMode();
+  nativeWorldName=spawn.getWorldName().asString();
+ }
+
+ private static int fixturePlotAtNativeTeleport() {
+  if(!"minecraft:ciaac-build-test".equals(nativeWorldName)
+    ||!Double.isFinite(nativeX)||!Double.isFinite(nativeY)||!Double.isFinite(nativeZ)
+    ||nativeY<64.0||nativeY>=68.0||nativeZ<0.0||nativeZ>=5.0)return 0;
+  if(nativeX>=0.0&&nativeX<5.0)return 1;
+  if(nativeX>=13.0&&nativeX<18.0)return 2;
+  return 0;
+ }
+
+ private static void requireBuildFixtureCreative() {
+  if(!joined||!positionKnown||!"minecraft:ciaac-build-test".equals(nativeWorldName)
+    ||nativeGameMode!=GameMode.CREATIVE||!nativeCreativeAbility||fixturePlotAtNativeTeleport()==0)
+   throw new IllegalStateException("Build actions require the server-observed creative Build Battle plot state");
+  int plot=fixturePlotAtNativeTeleport();
+  double minX=plot==1?0.0:13.0,maxX=plot==1?5.0:18.0;
+  if(!Double.isFinite(x)||!Double.isFinite(y)||!Double.isFinite(z)
+    ||x<minX||x>=maxX||y<64.0||y>=68.0||z<0.0||z>=5.0)
+   throw new IllegalStateException("Current native fixture pose is outside its assigned Build Battle plot");
+ }
+
+ private static int[] parseFixtureBlockCommand(String command,String action,boolean place) {
+  String[] parts=command.split(" ",-1);
+  if(place){
+   if(parts.length!=5||!parts[0].equals(action)||!parts[4].equals("up"))
+    throw new IllegalArgumentException("Expected place <x> <floor-y> <z> up");
+  }else if(parts.length!=4||!parts[0].equals(action))
+   throw new IllegalArgumentException("Expected break <x> <y> <z>");
+  int[] point=new int[3];
+  for(int i=0;i<3;i++){
+   String raw=parts[i+1];
+   if(!raw.matches("[0-9]{1,2}"))throw new IllegalArgumentException("Fixture block coordinates must be bounded integers");
+   point[i]=Integer.parseInt(raw);
+  }
+  return point;
+ }
+
+ private static void requireOwnPlotBlock(int blockX,int blockY,int blockZ,boolean placementFloor) {
+  int plot=fixturePlotAtNativeTeleport();
+  int minX=plot==1?0:13,maxX=plot==1?4:17;
+  int minY=64,maxY=placementFloor?66:67;
+  if(plot==0||blockX<minX||blockX>maxX||blockY<minY||blockY>maxY||blockZ<0||blockZ>4)
+   throw new IllegalArgumentException("Fixture block coordinate is outside this peer's reviewed Build Battle plot");
+ }
+
+ private static void requireFixtureReach(int blockX,int blockY,int blockZ,boolean placementFloor) {
+  double hitX=blockX+0.5,hitY=blockY+(placementFloor?1.0:0.5),hitZ=blockZ+0.5;
+  double dx=hitX-x,dy=hitY-(y+1.62),dz=hitZ-z;
+  if(dx*dx+dy*dy+dz*dz>4.5*4.5)
+   throw new IllegalStateException("Build target exceeds the fixture's 4.5 block reach bound");
+ }
+
+ private static void requireFixtureActionInterval() {
+  if(System.nanoTime()-lastActionNanos<250_000_000L)
+   throw new IllegalStateException("Fixture build actions require a 250ms interval");
+ }
+
+ private static void aimAtFixtureBlock(Session client,double hitX,double hitY,double hitZ) {
+  if(!Double.isFinite(x)||!Double.isFinite(y)||!Double.isFinite(z))
+   throw new IllegalStateException("Current native player pose is not finite");
+  double dx=hitX-x,dy=hitY-(y+1.62),dz=hitZ-z;
+  yaw=(float)Math.toDegrees(Math.atan2(-dx,dz));
+  pitch=(float)-Math.toDegrees(Math.atan2(dy,Math.hypot(dx,dz)));
+  if(!Float.isFinite(yaw)||!Float.isFinite(pitch))throw new IllegalStateException("Fixture block aim is not finite");
+  sendNativeMovement(client,false);
+ }
+
+ /** Uses the native creative inventory packet only after the server sent both creative signals. */
+ private static void sendFixtureCreativeSlot(ClientSession client,String command) {
+  if(!command.equals("creative-slot stone"))throw new IllegalArgumentException("Expected creative-slot stone");
+  requireGamePose(client);
+  synchronized(poseLock){
+   requireBuildFixtureCreative();
+   if(selectedHotbarSlot<0||selectedHotbarSlot>8)
+    throw new IllegalStateException("No server-selected native hotbar slot is known");
+   short inventorySlot=(short)(36+selectedHotbarSlot);
+   // Protocol 776 item id 1 is minecraft:stone; the packet changes only the selected native creative slot.
+   client.send(new ServerboundSetCreativeModeSlotPacket(inventorySlot,
+     new org.geysermc.mcprotocollib.protocol.data.game.item.ItemStack(1,1)));
+  }
+  System.out.println("Native creative slot packet sent; item=STONE; serverCreative=true");
+ }
+
+ /** Clicks the top of the fixture floor block to place one block in the cell above it. */
+ private static void sendFixtureBlockPlace(ClientSession client,String command) {
+  int[] point=parseFixtureBlockCommand(command,"place",true);
+  int px=point[0],py=point[1],pz=point[2];
+  requireGamePose(client);
+  synchronized(poseLock){
+   requireBuildFixtureCreative();
+   requireOwnPlotBlock(px,py,pz,true);
+   requireFixtureReach(px,py,pz,true);
+   requireFixtureActionInterval();
+   aimAtFixtureBlock(client,px+0.5,py+1.0,pz+0.5);
+   client.send(new ServerboundUseItemOnPacket(Vector3i.from(px,py,pz),Direction.UP,Hand.MAIN_HAND,
+     0.5f,1.0f,0.5f,false,false,nextOutgoingSequence()));
+   lastActionNanos=System.nanoTime();
+  }
+  System.out.println("Native fixture block placement packet sent; action=PLACE");
+ }
+
+ /** Sends ordinary native START_DIGGING/FINISH_DIGGING packets for one in-plot block. */
+ private static void sendFixtureBlockBreak(ClientSession client,String command) {
+  int[] point=parseFixtureBlockCommand(command,"break",false);
+  int bx=point[0],by=point[1],bz=point[2];
+  requireGamePose(client);
+  synchronized(poseLock){
+   requireBuildFixtureCreative();
+   requireOwnPlotBlock(bx,by,bz,false);
+   requireFixtureReach(bx,by,bz,false);
+   requireFixtureActionInterval();
+   aimAtFixtureBlock(client,bx+0.5,by+0.5,bz+0.5);
+   Vector3i position=Vector3i.from(bx,by,bz);
+   client.send(new ServerboundPlayerActionPacket(PlayerAction.START_DIGGING,position,Direction.UP,nextOutgoingSequence()));
+   client.send(new ServerboundPlayerActionPacket(PlayerAction.FINISH_DIGGING,position,Direction.UP,nextOutgoingSequence()));
+   lastActionNanos=System.nanoTime();
+  }
+  System.out.println("Native fixture block break packets sent; action=BREAK");
  }
 
  private static void cancelWalkInput(Session client) {
@@ -299,7 +541,7 @@ public final class LocalArenaPeer {
  }
 
  private static void suspendMotionAfterNativeTeleport(Session client) {
-  cancelWalkInput(client);flatFloorMotion=false;modelVelocityX=0;modelVelocityY=0;modelVelocityZ=0;
+  releaseDrawnBow(client);cancelWalkInput(client);flatFloorMotion=false;modelVelocityX=0;modelVelocityY=0;modelVelocityZ=0;
  }
 
  /** Opt-in model for a declared infinite flat synthetic floor; no block/world collision simulation. */
@@ -445,9 +687,24 @@ public final class LocalArenaPeer {
     "sessão iniciada com sucesso!","iniciaste sessão com sucesso!")
     .contains(normalized))return "AUTH_LOGIN_SUCCESS";
   if(normalized.equals("o combate começou."))return "ARENA_COMBAT_STARTED";
+  if(normalized.equals("espera um instante antes de repetires esse pedido."))return "CIAAC_RATE_LIMITED";
+  if(normalized.startsWith("voto registado: "))return "BUILD_BATTLE_THEME_VOTE_ACCEPTED";
+  if(normalized.contains("o alvo do disparo não foi reconhecido"))return "ARCHERY_TARGET_UNRECOGNIZED";
+  if(normalized.contains("o resultado do disparo não foi validado"))return "ARCHERY_SCORE_REJECTED";
+  if(normalized.contains("o disparo foi recusado"))return "ARCHERY_LAUNCH_REJECTED";
   if(normalized.equals("wrong password")||normalized.equals("wrong password!"))return "AUTH_PASSWORD_REJECTED";
   if(normalized.equals("esse comando não está disponível durante um minijogo."))return "CIAAC_COMMAND_BLOCKED";
   if(normalized.equals("not allowed")||normalized.equals("permission denied"))return "COMMAND_DENIED";
   return "OTHER";
+ }
+
+ private static boolean containsBuildBattleThemeOption(Component component, ClickEvent<?> inherited) {
+  ClickEvent<?> click=component.style().clickEvent();
+  if(click==null)click=inherited;
+  if(click!=null&&click.action().equals(ClickEvent.Action.RUN_COMMAND)
+   &&click.payload() instanceof ClickEvent.Payload.Text text
+   &&text.value().matches("/buildbattle tema [A-Za-z0-9_-]{1,64}"))return true;
+  for(Component child:component.children())if(containsBuildBattleThemeOption(child,click))return true;
+  return false;
  }
 }

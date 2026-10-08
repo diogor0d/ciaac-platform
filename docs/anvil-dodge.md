@@ -1,11 +1,12 @@
 # Fuga às Bigornas
 
-Estado em 2026-08-24 (endurecimento do código-fonte reconciliado):
+Última atualização: 2026-10-08.
 
-- `SOURCE-VERIFIED`: `AnvilDodgeGame`, `AnvilDodgeController`, o adaptador de controlador/módulo, o resolvedor/montador, as portas de encaminhamento de eventos e o registo de resultados estão presentes.
-- `UNVERIFIED`: não foi executada uma instalação, uma aceitação Paper em funcionamento ou um teste Paper descartável.
+`RUNTIME-VERIFIED`, com âmbito limitado, no candidato `6792e1924d90214e3a7c26919eb3cd0d0aaa83c16db0de38157f533129c1dc05`: duas ondas normais terminaram em `VICTORY` / `COMPLETED`; entrada tardia foi recusada; conclusão, saída, desconexão e crash frio restauraram exatamente os 18 campos Paper. No crash, após reinício e autenticação normal AuthMe, o marcador do plugin foi removido e a sua ausência confirmada no mundo. Os ensaios ocorreram num Paper descartável com peers sintéticos autenticados. Não demonstram aceitação em produção, com jogadores reais, nem todas as ondas, esquivas ou eliminações.
 
-## Experiência do jogador e comandos
+Evidência histórica local no candidato `0371202...`: conclusão, saída, desconexão, entrada tardia e crash ativo; o piso de 64 blocos `STONE` permaneceu inalterado. Nesse crash, a recuperação a frio restaurou os 18 campos, mas não produziu registo de resultado (`outcome log` nulo). Esse resultado nulo pertence ao ensaio histórico, não contradiz a vitória observada nos percursos atuais; a recuperação fria não prova por si só a persistência de resultado.
+
+## Experiência do jogador
 
 A rota em português é `/bigornas`:
 
@@ -16,7 +17,7 @@ A rota em português é `/bigornas`:
 /bigornas sair
 ```
 
-A ação partilhada `/bigornas pronto` não é suportada. O estado e as estatísticas públicas e pessoais estão disponíveis através de:
+`/bigornas pronto` não é suportado. O estado e as estatísticas estão disponíveis através de:
 
 ```text
 /minijogos estado
@@ -24,27 +25,33 @@ A ação partilhada `/bigornas pronto` não é suportada. O estado e as estatís
 /minijogos estatisticas anvil-dodge
 ```
 
-As mensagens devolvidas ao jogador são limitadas a pt-PT e não expõem detalhes de implementação.
+## Mecânica e ciclo de vida
 
-## Mecânicas e ciclo de vida
+O controlador planeia ondas determinísticas a partir da seed configurada. Os perigos são armor stands marcador invisíveis, não persistentes, com capacete de bigorna, animados sobre o piso; partículas e som acompanham o impacto controlado. Não são bigornas persistentes nem blocos em queda de Minecraft vanilla, e não há drops ou alteração do terreno. O impacto segue o fluxo controlado de eliminação do jogo.
 
-O módulo cria um controlador novo para cada encontro apenas depois de o controlador anterior terminar. A admissão respeita o máximo configurado e o jogo começa quando existe a composição mínima. O plano de ondas usa uma seed determinística para escolher células limitadas do piso. Em cada onda, os perigos são anunciados, os armor stands marcador pertencentes ao plugin são animados a partir de cima, as células seguras e perigosas são resolvidas e as esquivas são registadas.
+A configuração é recusada quando o total de marcadores planeados pela soma das ondas excede 4096, o limite de propriedade e limpeza. A altura da animação termina em `floor.minY + 8`, que tem de ficar abaixo do limite superior exclusivo do mundo. O módulo só pode admitir jogadores depois de resolver o mundo, a localização inicial, o piso e a fronteira.
 
-Os perigos são armor stands marcador invisíveis e não persistentes, com capacete de bigorna, partículas e som. O controlador nunca coloca uma bigorna persistente, cria drops ou usa a morte letal normal como resultado. Um impacto controlado segue o percurso de eliminação do domínio. Os IDs de operação rejeitam entradas repetidas ou antigas de esquiva e eliminação.
+## Instalação da área
 
-## Isolamento, posicionamento e recuperação
+Antes de ativar a admissão, confirmar manualmente:
 
-`GameKey.ANVIL_DODGE` usa a política `SPAWN_SAFEZONE`. O assembler utiliza a região imutável `anvil-dodge.boundary`; o cuboide configurado em `regions.floor` define a grelha de células e a localização `start` é o ponto de admissão. A região tem de estar registada para este jogo e o chunk inicial tem de estar carregado.
+1. Escolher o mundo principal e registar a região `boundary` para `anvil-dodge`, com papel de participação e limites imutáveis.
+2. Definir `regions.floor` como o volume da grelha. A largura vezes profundidade não pode exceder 4096 células; a altura Y do piso deve estar dentro da fronteira.
+3. Colocar `locations.start` dentro do próprio volume de `floor`, incluindo a coordenada Y. A localização `exit` também tem de estar configurada.
+4. Reservar espaço vertical desde `floor.minY` até `floor.minY + 8`, inclusive, tanto no mundo como na fronteira. `floor.minY` tem de ser pelo menos o `minHeight` do mundo e `floor.minY + 8` tem de ser menor que `maxHeight`.
+5. Carregar os chunks do piso, verificar que não há obstáculos no volume de animação e testar a entrada, saída e recuperação numa instalação descartável antes de abrir a admissão.
 
-`SessionCoordinator` guarda e recupera o estado do jogador e revoga o token de região em todos os percursos terminais. O router trata movimento, células do piso, teleportes, dano dos perigos, morte controlada, saída, expulsão e desconexão. A conclusão do encontro, a saída, o encerramento do plugin, a geometria inválida e uma falha de restauração seguem percursos de recuperação ou sem competição; os perigos são limpos em cada onda, resultado e recuperação.
+O assembler usa a fronteira imutável `anvil-dodge.boundary`; a grelha vem de `regions.floor`. A verificação de colocação não substitui a inspeção física de obstáculos ou de uma queda segura.
 
-Depois de uma desconexão direta do controlador, o wrapper fixo é atualizado para não deixar um marcador de encontro obsoleto. As tentativas de limpeza são independentes e as falhas são registadas sem expor detalhes internos aos jogadores. A recuperação durável da sessão continua a ser a autoridade.
+## Recuperação
 
-O listener de perigos deve resolver apenas o marcador pertencente ao plugin `anvil-dodge-hazard` para este encontro. O código expõe essa dependência através de um `AnvilHazardResolver` injetado; a ligação Paper em funcionamento ainda não foi verificada.
+`SessionCoordinator` guarda e recupera o estado do jogador e revoga o token da região nos percursos terminais. A limpeza durável identifica apenas os marcadores pertencentes ao plugin e ao encontro; a purga de todos os marcadores do encontro precede a restauração dos jogadores. Conclusão, saída, desconexão, encerramento e crash ativo passaram recuperação local nos cenários documentados. O ensaio histórico de crash no candidato `0371202...` não registou resultado de domínio; os percursos atuais confirmaram uma vitória normal, enquanto o crash frio verificou recuperação e limpeza. A persistência de resultados através de crash continua por validar.
 
-## Configuração e preparação do operador
+O adaptador de perigos é fornecido pelo provider nativo; já não está ausente. Mantêm-se por demonstrar a execução em produção e a aceitação com clientes Minecraft reais.
 
-O resolvedor aceita:
+## Configuração
+
+Valores aceites pelo resolvedor:
 
 ```text
 minimum-players: 1..64
@@ -54,15 +61,25 @@ warning-ticks: 1..72000
 wave-interval-ticks: 2..144000
 hazards-per-wave-start: 1..4096
 hazards-per-wave-increment: 0..4096
-regions.floor: cuboide, no máximo 4096 células
+regions.floor: cuboide, grelha com no máximo 4096 células
+total de marcadores planeados: no máximo 4096
 ```
 
-O módulo exige ainda o mundo resolvido, `start` e a região de participação. A revisão das regras, a seed determinística, a política estrita sem progressão e a entrada do adaptador `tagged-anvil-hazard` são contratos de configuração do código-fonte. O operador deve validá-los num mundo descartável antes de ativar a admissão.
+A revisão das regras, a seed determinística, a política sem progressão e a entrada `tagged-anvil-hazard` são contratos de configuração. A admissão só abre quando a resolução completa não apresenta diagnósticos.
 
-## Resultados e classificações
+## Resultados
 
-Os resultados usam o modo `ffa` e as métricas limitadas por jogador `survival_ms`, `waves`, `dodges` e `wins`. Um encontro concluído classifica os sobreviventes. Saída, desconexão, encerramento, configuração inválida e restauração falhada produzem `no-contest` quando todas as recuperações terminam com sucesso. O preset público é `survival_ms`, MAX; valores maiores são melhores. A consulta predefinida não filtra regras nem modo, pelo que uma classificação limitada exige uma consulta estatística explícita.
+Os resultados usam o modo `ffa` e as métricas limitadas por jogador `survival_ms`, `waves`, `dodges` e `wins`. Uma conclusão classifica sobreviventes. Saída, desconexão, encerramento, configuração inválida ou restauração falhada produzem `no-contest` quando a recuperação termina com sucesso. O preset público é `survival_ms`, MAX; consultas limitadas exigem filtros explícitos.
 
-## Limites de execução
+## Impacto e esquiva nativos — 2026-10-08
 
-O adaptador está ligado no código a comandos, apresentações de estado e portas de eventos tipadas. Não existe evidência de registo de listeners em funcionamento, entrega de displays/hologramas, entrega DiscordSRV ou aceitação Paper em produção.
+No candidato `b34b6a033728e6d8bd44fb90e8c373c0c56be95520f2f7f721e568c35c4d4e23`,
+`anvil-edges` confirmou recusa da fronteira enquanto se aguardava o segundo
+jogador. Depois do início, leu a posição real do marcador e usou movimento
+nativo para colocar um jogador na célula perigosa e o outro numa célula segura.
+O primeiro foi eliminado; o segundo esquivou-se nas duas ondas e recebeu
+`VICTORY` / `COMPLETED`. A consulta ligou resultado, classificações e métricas à
+partida exata do cenário. Ambos restauraram os 18 campos; os dois marcadores
+ficaram `REMOVED` e ausentes por UUID, e as 64 células do piso ficaram intactas.
+Não é uma prova de colisão física com bigornas vanilla: o controlador resolve o
+impacto pela célula do piso e os marcadores são entidades próprias do plugin.

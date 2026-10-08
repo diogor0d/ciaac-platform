@@ -2,6 +2,7 @@ package com.ciaac.minecraft.minigames.paper.isolation;
 
 import com.ciaac.minecraft.minigames.isolation.PlayerStateOperation;
 import com.ciaac.minecraft.minigames.persistence.ArenaWorldLedger;
+import com.ciaac.minecraft.minigames.persistence.NativeProcessIdentity;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.UUID;
@@ -19,11 +20,13 @@ public final class ArenaProjectileOwnership {
     private final Server server;
     private final ArenaWorldLedger ledger;
     private final NamespacedKey ownershipKey;
+    private final NativeProcessIdentity processIdentity;
 
     public ArenaProjectileOwnership(Plugin owner, ArenaWorldLedger ledger) {
         this.server = Objects.requireNonNull(owner, "owner").getServer();
         this.ledger = Objects.requireNonNull(ledger, "ledger");
         this.ownershipKey = new NamespacedKey(owner, "arena-projectile-owner-v1");
+        this.processIdentity = NativeProcessIdentity.current();
     }
 
     /** Requires an authenticated lifecycle caller, an armed lease, and an arrow not yet inserted. */
@@ -31,9 +34,11 @@ public final class ArenaProjectileOwnership {
         requireThread();
         Objects.requireNonNull(arrow, "arrow");
         ArenaWorldLedger.Lease lease = ledger.requireLease(capture);
-        ArenaWorldManifest manifest = ArenaWorldManifest.decode(lease.manifest());
+        UUID manifestWorld = lease.capture().game() == com.ciaac.minecraft.minigames.core.GameKey.ARENA
+                ? ArenaWorldManifest.decode(lease.manifest()).regions().getFirst().bounds().worldId()
+                : ArcheryWorldManifest.decode(lease.manifest()).regions().getFirst().bounds().worldId();
         if (lease.status() != ArenaWorldLedger.Status.ARMED || arrow.isInWorld()
-                || !manifest.regions().getFirst().bounds().worldId().equals(arrow.getWorld().getUID()))
+                || !manifestWorld.equals(arrow.getWorld().getUID()))
             throw new IllegalStateException("Arena projectile launch has no armed world lease");
         if (ledger.findEntity(arrow.getUniqueId()).isPresent())
             throw new IllegalStateException("Arena projectile UUID already has a durable owner");
@@ -41,11 +46,12 @@ public final class ArenaProjectileOwnership {
             throw new IllegalStateException("Arena projectile already has an ownership label");
         ArenaWorldLedger.EntityType type = type(arrow);
         arrow.setPersistent(false);
+        if (arrow.isPersistent()) throw new IllegalStateException("Arena projectile nonpersistence was not applied");
         arrow.setPickupStatus(AbstractArrow.PickupStatus.DISALLOWED);
         arrow.setFireTicks(0);
         arrow.getPersistentDataContainer().set(ownershipKey, PersistentDataType.STRING, label(lease.capture()));
         // The intention is durable before native world insertion may occur.
-        ledger.beginEntity(capture, arrow.getUniqueId(), arrow.getWorld().getUID(), type);
+        ledger.beginEntity(capture, arrow.getUniqueId(), arrow.getWorld().getUID(), type, processIdentity);
         validate(arrow, ledger.findEntity(arrow.getUniqueId()).orElseThrow());
     }
 
@@ -122,7 +128,11 @@ public final class ArenaProjectileOwnership {
                 if (entity != null) throw new IllegalStateException("Removed Arena projectile unexpectedly exists");
             } else {
                 // A null lookup alone cannot distinguish an unloaded persistent entity or unfinished launch.
-                if (entity == null) throw new IllegalStateException("Arena projectile absence needs lifecycle reconciliation");
+                if (entity == null) {
+                    if (!coldProcessAbsence(row))
+                        throw new IllegalStateException("Arena projectile absence needs lifecycle reconciliation");
+                    continue;
+                }
                 validate(entity, ledger.findEntity(row.entityId()).orElseThrow());
                 if (!entity.isInWorld() || !entity.isValid())
                     throw new IllegalStateException("Arena projectile is not a confirmed live entity");
@@ -137,7 +147,12 @@ public final class ArenaProjectileOwnership {
         for (var row : ledger.entities(context)) {
             if (row.status() == ArenaWorldLedger.EntityStatus.REMOVED) continue;
             Entity entity = server.getEntity(row.entityId());
-            if (entity == null) throw new IllegalStateException("Arena projectile disappeared during purge");
+            if (entity == null) {
+                if (!coldProcessAbsence(row))
+                    throw new IllegalStateException("Arena projectile disappeared during purge");
+                ledger.markRemoved(context, row.entityId());
+                continue;
+            }
             validate(entity, ledger.findEntity(row.entityId()).orElseThrow());
             entity.remove();
             if (entity.isValid() || !entity.isDead() || server.getEntity(row.entityId()) != null)
@@ -145,6 +160,13 @@ public final class ArenaProjectileOwnership {
             ledger.markRemoved(context, row.entityId());
         }
         ledger.completePurge(context);
+    }
+
+    /** The pinned native build never saves these entities; same-JVM absence is not removal proof. */
+    private boolean coldProcessAbsence(ArenaWorldLedger.Entity row) {
+        return server.getWorld(row.worldId()) != null
+                && ledger.nonPersistentProcess(row.entityId())
+                        .filter(created -> !created.equals(processIdentity)).isPresent();
     }
 
     /** Removes one proven owned projectile after a hit; unrelated UUIDs are rejected. */

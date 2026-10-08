@@ -139,7 +139,12 @@ public final class CiaacPlatformPlugin extends JavaPlugin {
         minecarts = service;
         PluginCommand command = Objects.requireNonNull(getCommand("ciaac"), "Falta declarar o comando ciaac");
         CiaacPlatformCommand executor = new CiaacPlatformCommand(
-                service, new MinecartSpeedAuditLogger(getLogger(), this::emit, this::minecartActor));
+                service, new MinecartSpeedAuditLogger(getLogger(), this::emit, this::minecartActor),
+                new com.ciaac.minecraft.platform.command.FacilitySetupCommands(getServer(),
+                        getDataFolder().toPath().resolve("templates"),
+                        () -> new RuntimeConfigurationLoader().load(getConfig()),
+                        () -> minigames.modules(),
+                        () -> minigames == null || minigames.hasBlockingSessions()));
         command.setExecutor(executor);
         command.setTabCompleter(executor);
     }

@@ -1,11 +1,13 @@
 # Sumo de Repulsão
 
-Estado em 2026-10-07:
+Última atualização: 2026-10-08.
 
 - `RUNTIME-VERIFIED` num Paper descartável: login AuthMe normal, entrada dos
   dois jogadores, teleports, duas saídas nativas do ringue para vitória numa
   série de três, empate por timeout, desconexão e restauro exato dos 18 campos
-  de estado observados. A recuperação de crash tem evidência separada.
+  de estado observados. No candidato `6792e19…`, um crash frio, reinício e
+  autenticação normal AuthMe restauraram exatamente os 18 campos Paper no
+  fixture descartável.
 - Ataques nativos produziram vitória por repulsão sem dano normal. O modelo de
   movimento dos peers é aproximado; física completa do cliente vanilla,
   colisões e aceitação das instalações reais continuam por verificar.

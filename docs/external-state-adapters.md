@@ -1,6 +1,6 @@
 # Adaptadores de estado externo
 
-- Estado do código e verificação: 2026-10-04.
+- Última atualização: 2026-10-08.
 - Guards concretos de economia/permissões/claims/homes: `SOURCE-VERIFIED`; aceitação integrada: `UNVERIFIED`.
 
 A CIAACPlatform descobre serviços Bukkit de
@@ -8,11 +8,15 @@ A CIAACPlatform descobre serviços Bukkit de
 Ter Vault, EssentialsX, LuckPerms ou um plugin de claims instalado não regista
 esse serviço. O runtime inclui também guards concretos para EssentialsX/Vault e
 LuckPerms e SimpleClaimSystem/Essentials; um serviço externo já registado tem
-precedência sobre um guard da mesma faceta. O isolamento temporário de mundo
-tem agora um provider Paper nativo limitado à Arena; os restantes jogos ainda
-não têm essa faceta e continuam fechados pela política sem progressão. A
-presença do provider não autentica nem admite jogadores: configuração, conexão,
-autenticação e todas as verificações de região continuam obrigatórias.
+precedência sobre um guard da mesma faceta. O provider Paper de
+`TEMPORARY_WORLD_BLOCKS_AND_ENTITIES` integra facetas de
+mundo para os nove modos no build revisto; o suporte concreto continua
+condicionado à instalação dos providers especializados, listeners saudáveis e
+configuração resolvida. A presença do provider não autentica nem admite
+jogadores: configuração, conexão, autenticação e todas as verificações de região
+continuam obrigatórias. Os ensaios nativos locais documentados abaixo e na
+[matriz de validação](all-minigames-validation.md) não aceitam instalações de
+produção.
 
 ## Autoridades que o minijogo não altera
 
@@ -185,12 +189,46 @@ Completar as autoridades ainda em falta e testar APIs reais e falhas em cada
 fronteira de mutação/commit. Nenhuma faceta em falta pode
 ser preenchida por um fornecedor vazio.
 
-| Faceta obrigatória | Candidato observado na listagem remota de JARs | Estado necessário |
+| Faceta obrigatória | Candidato observado na listagem remota de JARs em 2026-10-04 (histórico) | Estado então observado |
 | --- | --- | --- |
 | `ECONOMY` | Vault e EssentialsX 2.22.0 | Guard de conta UUID carregada implementado; aceitação integrada ainda por verificar. |
 | `PERMISSIONS` | LuckPerms 5.5.65 | Guard de utilizador/grafo carregado implementado, sem escritas de privilégios; aceitação integrada ainda por verificar. |
 | `CLAIMS_AND_HOMES` | SimpleClaimSystem 1.13.1 e EssentialsX 2.22.0 | Guard dos modelos internos SCS 1.13.1/Essentials 2.22.0 implementado; identidade carregada remota e aceitação integrada ainda por verificar. |
-| `TEMPORARY_WORLD_BLOCKS_AND_ENTITIES` | Paper 26.2 build 84, apenas `ARENA` | Provider e listener ligados ao runtime; fixture nativo confirma bootstrap e callbacks de entidades. Outros jogos não dispõem desta faceta. Admissão autenticada, combate, recuperação após crash e aceitação operacional continuam pendentes. |
+| `TEMPORARY_WORLD_BLOCKS_AND_ENTITIES` | Paper 26.2 build 84, inicialmente apenas `ARENA` | Estado histórico: provider e listener ligados ao runtime e fixture de bootstrap/callbacks; outros jogos ainda não dispunham desta faceta nesse perfil. Ver a atualização de 2026-10-08 abaixo para a cobertura atual. |
+
+## Cobertura runtime atual — 2026-10-08
+
+O [`ArenaWorldStatePort`](../src/main/java/com/ciaac/minecraft/minigames/paper/isolation/ArenaWorldStatePort.java)
+é o provider de `TEMPORARY_WORLD_BLOCKS_AND_ENTITIES`. A cobertura declarada
+inclui `ARENA`, `KNOCKBACK_SUMO`, `HOT_POTATO`, `CHECKPOINT_PARKOUR`,
+`ARCHERY_RANGE`, `COLOR_FLOOR`, `ANVIL_DODGE`, `ELYTRA_RINGS` e `BUILD_BATTLE`.
+Os quatro últimos dependem de providers especializados não nulos, que o
+[`MinigamePlatformRuntime`](../src/main/java/com/ciaac/minecraft/minigames/bootstrap/MinigamePlatformRuntime.java)
+instala antes de publicar o handler. A cobertura corresponde aos contratos
+limitados de isolamento por modo, não a um snapshot ou restauro integral do
+mundo.
+
+Os contratos nativos são distintos por modo: Arena e Arco guardam manifests das
+regiões possuídas; Sumo, Batata Quente e Parkour capturam uma fronteira imutável
+de região/mundo; Chão de Cores usa o template e ledger das células; Bigornas
+acompanha perigos do plugin; Elytra acompanha o curso e os foguetes próprios;
+Build Battle acompanha e repõe apenas as células pertencentes aos plots. As
+operações passam pelo journal e pela validação de identidade/estado específica
+de cada provider. A faceta não autoriza alterações de terreno fora dessas áreas
+e contratos.
+
+A implementação só fica disponível no servidor Paper oficial 26.2, build 84,
+commit `26e81c4`, e depois de instalar os listeners centrais de região e ciclo
+de vida. `available()` continua a exigir lifecycle pronto, sem falha ambígua e
+correspondência exata desse build. Autenticação, conexão, configuração,
+admissão e as outras facetas obrigatórias continuam gates independentes.
+
+A [matriz datada](all-minigames-validation.md) regista ensaios nativos locais
+limitados dos nove modos no candidato `6792e19…`. No JAR final
+`0741a3b…`, só mudou a classe da ajuda da consola comparada com aquele
+candidato; novos ensaios também aceitaram as fronteiras de Parkour e os quatro
+score bands de Archery. Isto não declara cobertura integral de variantes nem
+aceitação das instalações de produção.
 
 Os nomes e versões acima são evidência de ficheiros observados em 2026-10-04,
 não prova de API carregada ou de compatibilidade. Restaurar indiscriminadamente
@@ -210,7 +248,7 @@ Os testes de payload, identidade, codec, journal e gateway encontram-se no
 [registo funcional](functional-verification.md). A aceitação completa dos
 fornecedores continua pendente.
 
-## Isolamento de mundo da Arena — ligado ao runtime; aceitação parcial — 2026-10-04
+## Perfil inicial do isolamento da Arena — histórico, 2026-10-04
 
 O [`ArenaWorldManifest`](../src/main/java/com/ciaac/minecraft/minigames/paper/isolation/ArenaWorldManifest.java)
 conserva duas regiões Arena imutáveis, disjuntas e do mesmo UUID: combate e
@@ -279,9 +317,14 @@ que cruza a fronteira e alteração de redstone. A utilização de bow/shield n�
 [checkpoint funcional](functional-verification.md) para hashes e limites.
 
 
-## Sumo e Batata Quente: instalações imutáveis — 2026-10-07
+## Sumo e Batata Quente: instalações imutáveis — estado de 2026-10-07
 
-A cobertura atual de `ArenaWorldStatePort` inclui `ARENA`, `KNOCKBACK_SUMO` e
+Este registo documenta a extensão inicial a estes dois modos. A cobertura
+reportada aqui foi depois ampliada aos nove modos, conforme a secção de
+2026-10-08 acima; as declarações de ausência para os outros jogos descrevem o
+estado naquele momento.
+
+A cobertura observada em 2026-10-07 incluía `ARENA`, `KNOCKBACK_SUMO` e
 `HOT_POTATO`. A descrição anterior de cobertura exclusiva da Arena é histórica.
 `ImmutableMinigameWorldState` usa um manifest distinto, limitado e ligado à
 captura, com identidade do jogo, região, papel, UUID do mundo, limites de altura

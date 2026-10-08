@@ -30,9 +30,10 @@ import java.util.UUID;
 /** Durable ownership evidence for arena entities. This class never mutates a world or entity. */
 public final class ArenaWorldLedger implements AutoCloseable {
     public enum Status { CAPTURED, ARMED, PURGING, PURGED, RESTORED }
-    public enum EntityType { ARROW, SPECTRAL_ARROW }
+    public enum EntityType { ARROW, SPECTRAL_ARROW, ANVIL_MARKER, ELYTRA_FIREWORK }
     public enum EntityStatus { PENDING, CONFIRMED, REMOVED }
-    private static final int SCHEMA = 1;
+    private static final int SCHEMA = 3;
+    private static final int IDENTITY_SCHEMA = 1;
     private static final int MAX_MANIFEST = 128 * 1024;
     private static final int MAX_ENTITIES = 4096;
     private static final Comparator<Entity> ENTITY_ORDER = Comparator.comparing(Entity::entityId);
@@ -49,7 +50,7 @@ public final class ArenaWorldLedger implements AutoCloseable {
                 UNIQUE (session_id)
             )
             """;
-    private static final String CREATE_ENTITY_TABLE = """
+    private static final String CREATE_ENTITY_TABLE_V1 = """
             CREATE TABLE arena_entity (
                 entity_id TEXT NOT NULL PRIMARY KEY,
                 session_id TEXT NOT NULL,
@@ -58,6 +59,24 @@ public final class ArenaWorldLedger implements AutoCloseable {
                 entity_type TEXT NOT NULL CHECK (entity_type IN ('ARROW','SPECTRAL_ARROW')),
                 status TEXT NOT NULL CHECK (status IN ('PENDING','CONFIRMED','REMOVED')),
                 FOREIGN KEY (session_id, player_id) REFERENCES arena_lease(session_id, player_id)
+            )
+            """;
+    private static final String CREATE_ENTITY_TABLE = """
+            CREATE TABLE arena_entity (
+                entity_id TEXT NOT NULL PRIMARY KEY,
+                session_id TEXT NOT NULL,
+                player_id TEXT NOT NULL,
+                world_id TEXT NOT NULL,
+                entity_type TEXT NOT NULL CHECK (entity_type IN ('ARROW','SPECTRAL_ARROW','ANVIL_MARKER','ELYTRA_FIREWORK')),
+                status TEXT NOT NULL CHECK (status IN ('PENDING','CONFIRMED','REMOVED')),
+                FOREIGN KEY (session_id, player_id) REFERENCES arena_lease(session_id, player_id)
+            )
+            """;
+    private static final String CREATE_ENTITY_PROCESS_TABLE = """
+            CREATE TABLE arena_entity_process (
+                entity_id TEXT NOT NULL PRIMARY KEY REFERENCES arena_entity(entity_id),
+                process_pid INTEGER NOT NULL CHECK (typeof(process_pid) = 'integer' AND process_pid > 0),
+                process_started_at INTEGER NOT NULL CHECK (typeof(process_started_at) = 'integer' AND process_started_at > 0)
             )
             """;
     private static final String CREATE_ENTITY_LEASE_INDEX =
@@ -174,6 +193,40 @@ public final class ArenaWorldLedger implements AutoCloseable {
         catch (SQLException failure) { throw failure("Could not read arena lease", failure); }
     }
 
+    /** Returns every fully validated lease for one reviewed game and match, ordered by session UUID. */
+    public synchronized List<Lease> leasesForMatch(UUID matchId, GameKey game) {
+        Objects.requireNonNull(matchId, "matchId");
+        Objects.requireNonNull(game, "game");
+        if (!leaseGame(game)) throw new IllegalArgumentException("Match lease lookup requires a reviewed world game");
+        return leasesMatching(lease -> lease.capture().matchId().equals(matchId) && lease.capture().game() == game);
+    }
+
+    /** Unfinished captures also retain facility ownership across a cold restart. */
+    public synchronized List<Lease> unfinishedLeases(GameKey game) {
+        Objects.requireNonNull(game, "game");
+        if (!leaseGame(game)) throw new IllegalArgumentException("Facility lookup requires a reviewed world game");
+        return leasesMatching(lease -> lease.capture().game() == game && lease.status() != Status.RESTORED);
+    }
+
+    private List<Lease> leasesMatching(java.util.function.Predicate<Lease> selection) {
+        try {
+            List<Lease> result = new ArrayList<>();
+            try (var query = connection.createStatement();
+                 ResultSet rows = query.executeQuery("SELECT session_id FROM arena_lease ORDER BY session_id")) {
+                while (rows.next()) {
+                    UUID sessionId = parseUuid(rows.getString(1));
+                    Lease lease = readLeaseBySession(sessionId)
+                            .orElseThrow(() -> new IllegalStateException("Arena capture lease disappeared"));
+                    if (selection.test(lease)) {
+                        if (result.size() >= MAX_ENTITIES) throw new IllegalStateException("Arena match lease limit exceeded");
+                        result.add(lease);
+                    }
+                }
+            }
+            return List.copyOf(result);
+        } catch (SQLException failure) { throw failure("Could not read arena match leases", failure); }
+    }
+
     /** Resolves an entity by its globally unique UUID and validates that its exact lease still exists. */
     public synchronized Optional<EntityClaim> findEntity(UUID entityId) {
         Objects.requireNonNull(entityId, "entityId");
@@ -236,8 +289,15 @@ public final class ArenaWorldLedger implements AutoCloseable {
 
     /** Call only for a real, nonpersistent, tagged entity immediately before adding it to its world. */
     public synchronized Entity beginEntity(PlayerStateOperation context, UUID entityId, UUID worldId, EntityType type) {
+        return beginEntity(context, entityId, worldId, type, null);
+    }
+
+    /** Records process proof atomically with the durable entity intent before native insertion. */
+    public synchronized Entity beginEntity(PlayerStateOperation context, UUID entityId, UUID worldId,
+            EntityType type, NativeProcessIdentity processIdentity) {
         PlayerStateOperation capture = normalize(context);
         Objects.requireNonNull(entityId, "entityId"); Objects.requireNonNull(worldId, "worldId"); Objects.requireNonNull(type, "type");
+        requireCompatibleType(capture.game(), type);
         return transaction(() -> {
             Lease lease = readLease(capture);
             if (lease.status() != Status.ARMED) throw new IllegalStateException("Arena lease is not armed");
@@ -246,6 +306,8 @@ public final class ArenaWorldLedger implements AutoCloseable {
                 requireEntityOwner(capture, entityId);
                 if (!previous.worldId().equals(worldId) || previous.type() != type)
                     throw new IllegalStateException("Arena entity identity conflicts with replay");
+                if (!readProcessIdentity(entityId).equals(Optional.ofNullable(processIdentity)))
+                    throw new IllegalStateException("Arena entity process proof conflicts with replay");
                 return new Entity(previous.entityId(), previous.worldId(), previous.type(), previous.status());
             }
             if (countEntities(capture) >= MAX_ENTITIES) throw new IllegalStateException("Arena entity limit reached");
@@ -257,8 +319,44 @@ public final class ArenaWorldLedger implements AutoCloseable {
                 insert.setString(3, entityId.toString()); insert.setString(4, worldId.toString()); insert.setString(5, type.name());
                 insert.executeUpdate();
             }
+            if (processIdentity != null) {
+                try (var insert = connection.prepareStatement("""
+                        INSERT INTO arena_entity_process(entity_id, process_pid, process_started_at)
+                        VALUES (?, ?, ?)
+                        """)) {
+                    insert.setString(1, entityId.toString());
+                    insert.setLong(2, processIdentity.pid());
+                    insert.setLong(3, processIdentity.startedAtEpochMillis());
+                    insert.executeUpdate();
+                }
+            }
             return new Entity(entityId, worldId, type, EntityStatus.PENDING);
         });
+    }
+
+    /** Returns durable nonpersistent-entity proof; missing entities are invalid, legacy rows have no proof. */
+    public synchronized Optional<NativeProcessIdentity> nonPersistentProcess(UUID entityId) {
+        Objects.requireNonNull(entityId, "entityId");
+        try {
+            if (readEntityClaim(entityId) == null) throw new IllegalStateException("Arena entity claim does not exist");
+            return readProcessIdentity(entityId);
+        } catch (SQLException failure) { throw failure("Could not read arena entity process proof", failure); }
+    }
+
+    private Optional<NativeProcessIdentity> readProcessIdentity(UUID entityId) throws SQLException {
+        try (var query = connection.prepareStatement("""
+                SELECT process_pid, process_started_at FROM arena_entity_process WHERE entity_id = ?
+                """)) {
+            query.setString(1, entityId.toString());
+            try (ResultSet row = query.executeQuery()) {
+                if (!row.next()) return Optional.empty();
+                long pid = row.getLong(1); boolean nullPid = row.wasNull();
+                long startedAt = row.getLong(2); boolean nullStartedAt = row.wasNull();
+                if (nullPid || nullStartedAt || row.next()) throw new IllegalStateException("Arena entity process proof is corrupt");
+                try { return Optional.of(new NativeProcessIdentity(pid, startedAt)); }
+                catch (IllegalArgumentException malformed) { throw new IllegalStateException("Arena entity process proof is corrupt", malformed); }
+            }
+        }
     }
 
     public synchronized Entity confirmEntity(PlayerStateOperation context, UUID entityId) {
@@ -283,8 +381,10 @@ public final class ArenaWorldLedger implements AutoCloseable {
                 try (ResultSet rows = query.executeQuery()) {
                     while (rows.next()) {
                         if (result.size() >= MAX_ENTITIES) throw new IllegalStateException("Arena entity limit exceeded in ledger");
+                        EntityType type = EntityType.valueOf(rows.getString(3));
+                        requireCompatibleType(capture.game(), type);
                         result.add(new Entity(parseUuid(rows.getString(1)), parseUuid(rows.getString(2)),
-                                EntityType.valueOf(rows.getString(3)), EntityStatus.valueOf(rows.getString(4))));
+                                type, EntityStatus.valueOf(rows.getString(4))));
                     }
                 }
             }
@@ -370,8 +470,10 @@ public final class ArenaWorldLedger implements AutoCloseable {
                     UUID playerId = parseUuid(row.getString(2));
                     Lease lease = readLeaseBySession(sessionId).orElseThrow(() -> new IllegalStateException("Arena entity lease is missing"));
                     if (!lease.capture().playerId().equals(playerId)) throw new IllegalStateException("Arena entity player differs from lease");
+                    EntityType type = EntityType.valueOf(row.getString(5));
+                    requireCompatibleType(lease.capture().game(), type);
                     return new EntityClaim(sessionId, parseUuid(row.getString(3)), parseUuid(row.getString(4)),
-                            EntityType.valueOf(row.getString(5)), EntityStatus.valueOf(row.getString(6)));
+                            type, EntityStatus.valueOf(row.getString(6)));
                 }
                 catch (RuntimeException malformed) { throw new IllegalStateException("Arena entity row is corrupt", malformed); }
             }
@@ -426,8 +528,8 @@ public final class ArenaWorldLedger implements AutoCloseable {
 
     private static PlayerStateOperation normalize(PlayerStateOperation context) {
         Objects.requireNonNull(context, "context");
-        if (context.game() != GameKey.ARENA || context.capturedConnectionId() == null)
-            throw new IllegalArgumentException("Arena lease requires an ARENA capture epoch");
+        if (!leaseGame(context.game()) || context.capturedConnectionId() == null)
+            throw new IllegalArgumentException("World lease requires a reviewed game capture epoch");
         return new PlayerStateOperation(PlayerStateOperation.Kind.CAPTURE, context.captureOperationId(),
                 context.captureOperationId(), context.snapshotId(), context.sessionId(), context.matchId(),
                 context.playerId(), context.capturedConnectionId(), context.capturedConnectionId(),
@@ -438,7 +540,7 @@ public final class ArenaWorldLedger implements AutoCloseable {
         try {
             ByteArrayOutputStream bytes = new ByteArrayOutputStream();
             try (DataOutputStream out = new DataOutputStream(bytes)) {
-                out.writeInt(SCHEMA); out.writeUTF(capture.kind().name());
+                out.writeInt(IDENTITY_SCHEMA); out.writeUTF(capture.kind().name());
                 for (UUID id : new UUID[] {capture.operationId(), capture.captureOperationId(), capture.snapshotId(),
                         capture.sessionId(), capture.matchId(), capture.playerId(), capture.capturedConnectionId()}) {
                     out.writeLong(id.getMostSignificantBits()); out.writeLong(id.getLeastSignificantBits());
@@ -453,14 +555,14 @@ public final class ArenaWorldLedger implements AutoCloseable {
         if (encoded == null || encoded.length == 0 || encoded.length > 256)
             throw new IllegalStateException("Arena capture identity is corrupt");
         try (var in = new java.io.DataInputStream(new java.io.ByteArrayInputStream(encoded))) {
-            if (in.readInt() != SCHEMA || !PlayerStateOperation.Kind.CAPTURE.name().equals(in.readUTF()))
+            if (in.readInt() != IDENTITY_SCHEMA || !PlayerStateOperation.Kind.CAPTURE.name().equals(in.readUTF()))
                 throw new IllegalStateException("Arena capture identity header is corrupt");
             UUID operationId = readUuid(in), captureOperationId = readUuid(in), snapshotId = readUuid(in);
             UUID sessionId = readUuid(in), matchId = readUuid(in), playerId = readUuid(in), capturedEpoch = readUuid(in);
             GameKey game = GameKey.fromId(in.readUTF())
                     .orElseThrow(() -> new IllegalStateException("Arena capture game is corrupt"));
             Instant capturedAt = Instant.ofEpochSecond(in.readLong(), in.readInt());
-            if (in.available() != 0 || !operationId.equals(captureOperationId) || game != GameKey.ARENA)
+            if (in.available() != 0 || !operationId.equals(captureOperationId) || !leaseGame(game))
                 throw new IllegalStateException("Arena capture identity is invalid");
             PlayerStateOperation capture = new PlayerStateOperation(PlayerStateOperation.Kind.CAPTURE,
                     operationId, captureOperationId, snapshotId, sessionId, matchId, playerId, capturedEpoch,
@@ -483,6 +585,21 @@ public final class ArenaWorldLedger implements AutoCloseable {
         return manifest.clone();
     }
 
+    private static boolean leaseGame(GameKey game) {
+        return game == GameKey.ARENA || game == GameKey.ARCHERY_RANGE
+                || game == GameKey.ANVIL_DODGE || game == GameKey.ELYTRA_RINGS || game == GameKey.BUILD_BATTLE;
+    }
+
+    private static void requireCompatibleType(GameKey game, EntityType type) {
+        boolean compatible = switch (game) {
+            case ARENA, ARCHERY_RANGE -> type == EntityType.ARROW || type == EntityType.SPECTRAL_ARROW;
+            case ANVIL_DODGE -> type == EntityType.ANVIL_MARKER;
+            case ELYTRA_RINGS -> type == EntityType.ELYTRA_FIREWORK;
+            default -> false;
+        };
+        if (!compatible) throw new IllegalStateException("Arena entity type is incompatible with capture game");
+    }
+
     private static String checksum(byte[] payload) {
         try { return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(payload)); }
         catch (NoSuchAlgorithmException impossible) { throw new IllegalStateException("SHA-256 unavailable", impossible); }
@@ -498,7 +615,9 @@ public final class ArenaWorldLedger implements AutoCloseable {
             statement.execute("PRAGMA foreign_keys = ON");
             int version;
             try (ResultSet row = statement.executeQuery("PRAGMA user_version")) { version = row.getInt(1); }
-            if (version != 0 && version != SCHEMA) throw new SQLException("Unsupported arena ledger schema");
+            if (version != 0 && version != 1 && version != 2 && version != SCHEMA) {
+                throw new SQLException("Unsupported arena ledger schema");
+            }
             if (version == 0) {
                 try (ResultSet row = statement.executeQuery("SELECT count(*) FROM sqlite_master WHERE name NOT LIKE 'sqlite_%'")) {
                     if (row.getInt(1) != 0) throw new SQLException("Unversioned arena ledger is not empty");
@@ -509,31 +628,165 @@ public final class ArenaWorldLedger implements AutoCloseable {
                     statement.executeUpdate(CREATE_ENTITY_TABLE);
                     statement.executeUpdate(CREATE_ENTITY_LEASE_INDEX);
                     statement.executeUpdate(CREATE_ACTIVE_PLAYER_INDEX);
-                    statement.executeUpdate("PRAGMA user_version = 1"); connection.commit();
+                    statement.executeUpdate(CREATE_ENTITY_PROCESS_TABLE);
+                    statement.executeUpdate("PRAGMA user_version = 3"); connection.commit();
+                } catch (SQLException failure) { connection.rollback(); throw failure; }
+                finally { connection.setAutoCommit(true); }
+                version = SCHEMA;
+            }
+            if (version == 1 || version == 2) {
+                // Validate all old evidence before the first schema mutation. Do not repair or rewrite it.
+                validateSchema(statement, version);
+                validateDataIntegrity(statement);
+                validateEntityCompatibility(connection);
+                connection.setAutoCommit(false);
+                try {
+                    migrateEntitySchemaToV3(statement, version == 2);
+                    statement.executeUpdate("PRAGMA user_version = 3");
+                    connection.commit();
                 } catch (SQLException failure) { connection.rollback(); throw failure; }
                 finally { connection.setAutoCommit(true); }
             }
-            try (ResultSet rows = statement.executeQuery("SELECT session_id, player_id, capture_operation_id, capture_identity, manifest, manifest_sha256, status FROM arena_lease LIMIT 0")) {}
-            try (ResultSet rows = statement.executeQuery("SELECT entity_id, session_id, player_id, world_id, entity_type, status FROM arena_entity LIMIT 0")) {}
-            try (ResultSet rows = statement.executeQuery("SELECT player_id FROM arena_lease WHERE status IN ('ARMED','PURGING','PURGED') GROUP BY player_id HAVING count(*) > 1")) {
-                if (rows.next()) throw new SQLException("Arena player has multiple active leases");
-            }
-            try (ResultSet rows = statement.executeQuery("SELECT session_id FROM arena_lease GROUP BY session_id HAVING count(*) > 1")) {
-                if (rows.next()) throw new SQLException("Arena session has multiple leases");
-            }
-            requireSchemaSql(statement, "table", "arena_lease", CREATE_LEASE_TABLE);
-            requireSchemaSql(statement, "table", "arena_entity", CREATE_ENTITY_TABLE);
-            requireSchemaSql(statement, "index", "arena_entity_lease", CREATE_ENTITY_LEASE_INDEX);
-            requireSchemaSql(statement, "index", "arena_active_player", CREATE_ACTIVE_PLAYER_INDEX);
-            try (ResultSet rows = statement.executeQuery("PRAGMA quick_check")) {
-                if (!rows.next() || !"ok".equals(rows.getString(1))) throw new SQLException("Arena ledger is corrupt");
-            }
-            try (ResultSet rows = statement.executeQuery("PRAGMA foreign_key_check")) {
-                if (rows.next()) throw new SQLException("Arena ledger contains a foreign-key violation");
-            }
+            validateSchema(statement, SCHEMA);
+            validateDataIntegrity(statement);
+            validateEntityCompatibility(connection);
             statement.execute("PRAGMA journal_mode = WAL"); statement.execute("PRAGMA synchronous = FULL");
             statement.execute("PRAGMA busy_timeout = 5000");
         }
+    }
+
+    private static void validateSchema(Statement statement, int version) throws SQLException {
+        boolean includeProcessTable = version >= 2;
+        try (ResultSet rows = statement.executeQuery("SELECT session_id, player_id, capture_operation_id, capture_identity, manifest, manifest_sha256, status FROM arena_lease LIMIT 0")) {}
+        try (ResultSet rows = statement.executeQuery("SELECT entity_id, session_id, player_id, world_id, entity_type, status FROM arena_entity LIMIT 0")) {}
+        if (includeProcessTable) {
+            try (ResultSet rows = statement.executeQuery("SELECT entity_id, process_pid, process_started_at FROM arena_entity_process LIMIT 0")) {}
+        }
+        try (ResultSet rows = statement.executeQuery("SELECT player_id FROM arena_lease WHERE status IN ('ARMED','PURGING','PURGED') GROUP BY player_id HAVING count(*) > 1")) {
+            if (rows.next()) throw new SQLException("Arena player has multiple active leases");
+        }
+        try (ResultSet rows = statement.executeQuery("SELECT session_id FROM arena_lease GROUP BY session_id HAVING count(*) > 1")) {
+            if (rows.next()) throw new SQLException("Arena session has multiple leases");
+        }
+        requireSchemaSql(statement, "table", "arena_lease", CREATE_LEASE_TABLE);
+        requireSchemaSql(statement, "table", "arena_entity",
+                version >= 3 ? CREATE_ENTITY_TABLE : CREATE_ENTITY_TABLE_V1);
+        requireSchemaSql(statement, "index", "arena_entity_lease", CREATE_ENTITY_LEASE_INDEX);
+        requireSchemaSql(statement, "index", "arena_active_player", CREATE_ACTIVE_PLAYER_INDEX);
+        if (includeProcessTable) requireSchemaSql(statement, "table", "arena_entity_process", CREATE_ENTITY_PROCESS_TABLE);
+        requireExactSchemaObjects(statement, includeProcessTable);
+    }
+
+    /** Rebuilds the constrained entity table transactionally while preserving every old row verbatim. */
+    private static void migrateEntitySchemaToV3(Statement statement, boolean includeProcessTable) throws SQLException {
+        statement.executeUpdate("""
+                CREATE TEMP TABLE arena_entity_migration AS
+                SELECT entity_id, session_id, player_id, world_id, entity_type, status FROM main.arena_entity WHERE 0
+                """);
+        statement.executeUpdate("""
+                INSERT INTO temp.arena_entity_migration(entity_id, session_id, player_id, world_id, entity_type, status)
+                SELECT entity_id, session_id, player_id, world_id, entity_type, status FROM main.arena_entity
+                """);
+        if (includeProcessTable) {
+            statement.executeUpdate("""
+                    CREATE TEMP TABLE arena_entity_process_migration AS
+                    SELECT entity_id, process_pid, process_started_at FROM main.arena_entity_process WHERE 0
+                    """);
+            statement.executeUpdate("""
+                    INSERT INTO temp.arena_entity_process_migration(entity_id, process_pid, process_started_at)
+                    SELECT entity_id, process_pid, process_started_at FROM main.arena_entity_process
+                    """);
+            statement.executeUpdate("DROP TABLE main.arena_entity_process");
+        }
+        statement.executeUpdate("DROP TABLE main.arena_entity");
+        statement.executeUpdate(CREATE_ENTITY_TABLE);
+        statement.executeUpdate("""
+                INSERT INTO main.arena_entity(entity_id, session_id, player_id, world_id, entity_type, status)
+                SELECT entity_id, session_id, player_id, world_id, entity_type, status FROM temp.arena_entity_migration
+                """);
+        statement.executeUpdate(CREATE_ENTITY_LEASE_INDEX);
+        statement.executeUpdate(CREATE_ENTITY_PROCESS_TABLE);
+        if (includeProcessTable) {
+            statement.executeUpdate("""
+                    INSERT INTO main.arena_entity_process(entity_id, process_pid, process_started_at)
+                    SELECT entity_id, process_pid, process_started_at FROM temp.arena_entity_process_migration
+                    """);
+            statement.executeUpdate("DROP TABLE temp.arena_entity_process_migration");
+        }
+        statement.executeUpdate("DROP TABLE temp.arena_entity_migration");
+    }
+
+    private static void validateEntityCompatibility(Connection connection) throws SQLException {
+        try (var query = connection.createStatement();
+             ResultSet rows = query.executeQuery("SELECT session_id, entity_type FROM arena_entity ORDER BY entity_id")) {
+            while (rows.next()) {
+                UUID sessionId = parseUuid(rows.getString(1));
+                EntityType type;
+                try { type = EntityType.valueOf(rows.getString(2)); }
+                catch (RuntimeException malformed) { throw new SQLException("Arena entity type is corrupt", malformed); }
+                Lease lease = readLeaseForValidation(connection, sessionId);
+                try { requireCompatibleType(lease.capture().game(), type); }
+                catch (RuntimeException incompatible) {
+                    throw new SQLException("Arena entity type is incompatible with capture game", incompatible);
+                }
+            }
+        }
+    }
+
+    private static Lease readLeaseForValidation(Connection connection, UUID sessionId) throws SQLException {
+        try (var query = connection.prepareStatement("""
+                SELECT player_id, capture_operation_id, length(capture_identity), length(manifest),
+                    manifest_sha256, status, capture_identity, manifest FROM arena_lease WHERE session_id = ?
+                """)) {
+            query.setString(1, sessionId.toString());
+            try (ResultSet row = query.executeQuery()) {
+                if (!row.next()) throw new SQLException("Arena entity lease is missing");
+                UUID playerId = parseUuid(row.getString(1));
+                UUID captureOperationId = parseUuid(row.getString(2));
+                byte[] encoded = row.getBytes(7);
+                byte[] manifest = row.getBytes(8);
+                PlayerStateOperation capture;
+                try { capture = decodeIdentity(encoded); }
+                catch (RuntimeException malformed) { throw new SQLException("Arena capture identity is corrupt", malformed); }
+                long identityLength = row.getLong(3);
+                boolean nullIdentityLength = row.wasNull();
+                long manifestLength = row.getLong(4);
+                boolean nullManifestLength = row.wasNull();
+                if (!sessionId.equals(capture.sessionId()) || !playerId.equals(capture.playerId())
+                        || !captureOperationId.equals(capture.captureOperationId())
+                        || nullIdentityLength || nullManifestLength || identityLength <= 0 || identityLength > 256
+                        || manifest == null || manifestLength != manifest.length || manifestLength <= 0
+                        || manifestLength > MAX_MANIFEST || !checksum(manifest).equals(row.getString(5))) {
+                    throw new SQLException("Arena entity lease is corrupt");
+                }
+                Status status;
+                try { status = Status.valueOf(row.getString(6)); }
+                catch (RuntimeException malformed) { throw new SQLException("Arena lease status is corrupt", malformed); }
+                return new Lease(capture, manifest, status);
+            }
+        }
+    }
+
+    private static void validateDataIntegrity(Statement statement) throws SQLException {
+        try (ResultSet rows = statement.executeQuery("PRAGMA quick_check")) {
+            if (!rows.next() || !"ok".equals(rows.getString(1))) throw new SQLException("Arena ledger is corrupt");
+        }
+        try (ResultSet rows = statement.executeQuery("PRAGMA foreign_key_check")) {
+            if (rows.next()) throw new SQLException("Arena ledger contains a foreign-key violation");
+        }
+    }
+
+    private static void requireExactSchemaObjects(Statement statement, boolean includeProcessTable) throws SQLException {
+        java.util.Set<String> expected = includeProcessTable
+                ? java.util.Set.of("table:arena_lease", "table:arena_entity", "table:arena_entity_process",
+                        "index:arena_entity_lease", "index:arena_active_player")
+                : java.util.Set.of("table:arena_lease", "table:arena_entity",
+                        "index:arena_entity_lease", "index:arena_active_player");
+        java.util.Set<String> actual = new java.util.HashSet<>();
+        try (ResultSet rows = statement.executeQuery("SELECT type, name FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' ORDER BY type, name")) {
+            while (rows.next()) actual.add(rows.getString(1) + ":" + rows.getString(2));
+        }
+        if (!actual.equals(expected)) throw new SQLException("Arena ledger schema object set differs");
     }
 
     private static void rejectSymlinkAncestors(Path root) throws IOException {

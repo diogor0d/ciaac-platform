@@ -16,7 +16,7 @@ import java.util.Set;
 import org.bukkit.Server;
 import org.bukkit.entity.Player;
 
-/** Immutable combat facilities; owned projectile lifecycle is supported only for Arena. */
+/** Immutable facilities; owned arrows are supported for Arena and Archery. */
 public final class ArenaWorldStatePort implements ExternalStateFacetPort {
     private static final String ID = "paper-26.2-84-arena-world-v1";
     private static final byte[] EMPTY = new byte[0];
@@ -27,6 +27,10 @@ public final class ArenaWorldStatePort implements ExternalStateFacetPort {
     private final ExternalOperationJournal journal;
     private final AuditRepository audit;
     private final ImmutableMinigameWorldState immutableGames;
+    private ColorFloorWorldState colorFloor;
+    private AnvilWorldState anvil;
+    private ElytraWorldState elytra;
+    private BuildBattleWorldState buildBattle;
     private boolean lifecycleReady;
     private boolean lifecycleFailed;
 
@@ -39,6 +43,31 @@ public final class ArenaWorldStatePort implements ExternalStateFacetPort {
         this.journal = Objects.requireNonNull(journal, "journal");
         this.audit = Objects.requireNonNull(audit, "audit");
         this.immutableGames = new ImmutableMinigameWorldState(ID, server, regions, journal, audit);
+    }
+
+    /** Installed before handlers advertise their game coverage. */
+    public void colorFloor(ColorFloorWorldState provider) {
+        requireThread();
+        if (lifecycleReady || colorFloor != null) throw new IllegalStateException("Color Floor isolation is already frozen");
+        colorFloor = Objects.requireNonNull(provider, "provider");
+    }
+
+    public void anvil(AnvilWorldState provider) {
+        requireThread();
+        if (lifecycleReady || anvil != null) throw new IllegalStateException("Anvil isolation is already frozen");
+        anvil = Objects.requireNonNull(provider, "provider");
+    }
+
+    public void elytra(ElytraWorldState provider) {
+        requireThread();
+        if (lifecycleReady || elytra != null) throw new IllegalStateException("Elytra isolation is already frozen");
+        elytra = Objects.requireNonNull(provider, "provider");
+    }
+
+    public void buildBattle(BuildBattleWorldState provider) {
+        requireThread();
+        if (lifecycleReady || buildBattle != null) throw new IllegalStateException("Build Battle isolation is already frozen");
+        buildBattle = Objects.requireNonNull(provider, "provider");
     }
 
     /** Runtime must call only after installing and verifying the required protection/lifecycle listeners. */
@@ -60,13 +89,25 @@ public final class ArenaWorldStatePort implements ExternalStateFacetPort {
     @Override public String id() { return ID; }
     @Override public int snapshotVersion() { return 1; }
     @Override public Set<PlayerStateFacet> facets() { return Set.of(PlayerStateFacet.TEMPORARY_WORLD_BLOCKS_AND_ENTITIES); }
-    @Override public Set<GameKey> supportedGames() { return Set.of(GameKey.ARENA, GameKey.KNOCKBACK_SUMO, GameKey.HOT_POTATO); }
+    @Override public Set<GameKey> supportedGames() {
+        var supported = java.util.EnumSet.of(GameKey.ARENA, GameKey.KNOCKBACK_SUMO, GameKey.HOT_POTATO,
+                GameKey.CHECKPOINT_PARKOUR, GameKey.ARCHERY_RANGE);
+        if (colorFloor != null) supported.add(GameKey.COLOR_FLOOR);
+        if (anvil != null) supported.add(GameKey.ANVIL_DODGE);
+        if (elytra != null) supported.add(GameKey.ELYTRA_RINGS);
+        if (buildBattle != null) supported.add(GameKey.BUILD_BATTLE);
+        return Set.copyOf(supported);
+    }
     @Override public boolean available() { return lifecycleReady && !lifecycleFailed && nativeBuildMatches(); }
 
     @Override public byte[] capture(Player player, PlayerStateOperation context) {
         requirePlayer(player, context, PlayerStateOperation.Kind.CAPTURE);
-        if (context.game() != GameKey.ARENA) return immutableGames.capture(context);
-        byte[] manifest = currentManifest().encode();
+        if (context.game() == GameKey.COLOR_FLOOR) return colorFloor.capture(context);
+        if (context.game() == GameKey.ANVIL_DODGE) return anvil.capture(context);
+        if (context.game() == GameKey.ELYTRA_RINGS) return elytra.capture(context);
+        if (context.game() == GameKey.BUILD_BATTLE) return buildBattle.capture(context);
+        if (immutableGame(context.game())) return immutableGames.capture(context);
+        byte[] manifest = currentManifest(context.game());
         // Neither a replay nor a failed capture can replace the frozen world/region policy.
         ledger.capture(context, manifest);
         journal.begin(ID, snapshotVersion(), context, EMPTY);
@@ -77,11 +118,16 @@ public final class ArenaWorldStatePort implements ExternalStateFacetPort {
 
     @Override public void validateRestore(PlayerStateOperation context, int version, byte[] payload) {
         requireContext(context);
-        if (context.game() != GameKey.ARENA) { immutableGames.validate(context, version, payload); return; }
+        if (context.game() == GameKey.COLOR_FLOOR) { colorFloor.validate(context, version, payload); return; }
+        if (context.game() == GameKey.ANVIL_DODGE) { anvil.validate(context, version, payload); return; }
+        if (context.game() == GameKey.ELYTRA_RINGS) { elytra.validate(context, version, payload); return; }
+        if (context.game() == GameKey.BUILD_BATTLE) { buildBattle.validate(context, version, payload); return; }
+        if (immutableGame(context.game())) { immutableGames.validate(context, version, payload); return; }
         if (version != snapshotVersion()) throw new IllegalArgumentException("Unsupported Arena world snapshot version");
-        ArenaWorldManifest.decode(payload);
+        if (context.game() == GameKey.ARENA) ArenaWorldManifest.decode(payload);
+        else ArcheryWorldManifest.decode(payload);
         var lease = ledger.requireLease(context);
-        if (!Arrays.equals(payload, lease.manifest()) || !Arrays.equals(payload, currentManifest().encode())
+        if (!Arrays.equals(payload, lease.manifest()) || !Arrays.equals(payload, currentManifest(context.game()))
                 || !Arrays.equals(payload, captured(context)))
             throw new IllegalStateException("Arena world snapshot differs from durable or current protection policy");
         projectiles.validatePurge(context);
@@ -92,7 +138,11 @@ public final class ArenaWorldStatePort implements ExternalStateFacetPort {
 
     @Override public void enterTemporaryState(Player player, PlayerStateOperation context) {
         requirePlayer(player, context, PlayerStateOperation.Kind.ENTER);
-        if (context.game() != GameKey.ARENA) { immutableGames.checkpoint(context); return; }
+        if (context.game() == GameKey.COLOR_FLOOR) { colorFloor.enter(context); return; }
+        if (context.game() == GameKey.ANVIL_DODGE) { anvil.enter(context); return; }
+        if (context.game() == GameKey.ELYTRA_RINGS) { elytra.enter(context); return; }
+        if (context.game() == GameKey.BUILD_BATTLE) { buildBattle.enter(context); return; }
+        if (immutableGame(context.game())) { immutableGames.checkpoint(context); return; }
         byte[] payload = captured(context);
         validateRestore(context, snapshotVersion(), payload);
         journal.begin(ID, snapshotVersion(), context, payload);
@@ -103,7 +153,11 @@ public final class ArenaWorldStatePort implements ExternalStateFacetPort {
 
     @Override public void purgeTemporaryState(Player player, PlayerStateOperation context) {
         requirePlayer(player, context, PlayerStateOperation.Kind.PURGE);
-        if (context.game() != GameKey.ARENA) { immutableGames.checkpoint(context); return; }
+        if (context.game() == GameKey.COLOR_FLOOR) { colorFloor.purge(context); return; }
+        if (context.game() == GameKey.ANVIL_DODGE) { anvil.purge(context); return; }
+        if (context.game() == GameKey.ELYTRA_RINGS) { elytra.purge(context); return; }
+        if (context.game() == GameKey.BUILD_BATTLE) { buildBattle.purge(context); return; }
+        if (immutableGame(context.game())) { immutableGames.checkpoint(context); return; }
         byte[] payload = captured(context);
         validateRestore(context, snapshotVersion(), payload);
         journal.begin(ID, snapshotVersion(), context, payload);
@@ -116,23 +170,34 @@ public final class ArenaWorldStatePort implements ExternalStateFacetPort {
     @Override public void restore(Player player, PlayerStateOperation context, int version, byte[] payload) {
         requirePlayer(player, context, PlayerStateOperation.Kind.RESTORE);
         validateRestore(context, version, payload);
-        if (context.game() != GameKey.ARENA) { immutableGames.checkpoint(context); return; }
+        if (context.game() == GameKey.COLOR_FLOOR) { colorFloor.restore(context, version, payload); return; }
+        if (context.game() == GameKey.ANVIL_DODGE) { anvil.restore(context, version, payload); return; }
+        if (context.game() == GameKey.ELYTRA_RINGS) { elytra.restore(context, version, payload); return; }
+        if (context.game() == GameKey.BUILD_BATTLE) { buildBattle.restore(context, version, payload); return; }
+        if (immutableGame(context.game())) { immutableGames.checkpoint(context); return; }
         journal.begin(ID, snapshotVersion(), context, payload);
         ledger.markRestored(context);
         journal.commit(ID, snapshotVersion(), context, payload, EMPTY);
         audit(context, payload);
     }
 
-    private ArenaWorldManifest currentManifest() {
-        var manifest = new ArenaWorldManifest(server.getVersion(), regions.all().stream()
-                .filter(region -> region.game() == GameKey.ARENA).toList());
-        var world = server.getWorld(manifest.regions().getFirst().bounds().worldId());
+    private byte[] currentManifest(GameKey game) {
+        var owned = regions.all().stream().filter(region -> region.game() == game).toList();
+        byte[] encoded = game == GameKey.ARENA
+                ? new ArenaWorldManifest(server.getVersion(), owned).encode()
+                : new ArcheryWorldManifest(server.getVersion(), owned).encode();
+        var world = server.getWorld(owned.getFirst().bounds().worldId());
         if (world == null) throw new IllegalStateException("Arena world is not loaded");
-        for (var region : manifest.regions()) {
+        for (var region : owned) {
             if (region.bounds().minY() < world.getMinHeight() || region.bounds().maxY() >= world.getMaxHeight())
                 throw new IllegalStateException("Arena region exceeds the current world's height");
         }
-        return manifest;
+        return encoded;
+    }
+
+    private static boolean immutableGame(GameKey game) {
+        return game == GameKey.KNOCKBACK_SUMO || game == GameKey.HOT_POTATO
+                || game == GameKey.CHECKPOINT_PARKOUR;
     }
 
     private byte[] captured(PlayerStateOperation context) {

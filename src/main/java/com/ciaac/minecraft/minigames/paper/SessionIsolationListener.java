@@ -16,6 +16,8 @@ import org.bukkit.command.PluginIdentifiableCommand;
 import org.bukkit.plugin.Plugin;
 import java.util.Optional;
 import java.util.UUID;
+import java.util.function.Function;
+import org.bukkit.GameMode;
 import org.bukkit.entity.Entity;
 import org.bukkit.entity.Player;
 import org.bukkit.entity.Projectile;
@@ -40,6 +42,7 @@ import org.bukkit.event.player.PlayerChangedWorldEvent;
 import org.bukkit.event.player.PlayerCommandPreprocessEvent;
 import org.bukkit.event.player.PlayerDropItemEvent;
 import org.bukkit.event.player.PlayerFishEvent;
+import org.bukkit.event.player.PlayerGameModeChangeEvent;
 import org.bukkit.event.player.PlayerHarvestBlockEvent;
 import org.bukkit.event.player.PlayerInteractEntityEvent;
 import org.bukkit.event.player.PlayerQuitEvent;
@@ -55,6 +58,7 @@ public final class SessionIsolationListener implements Listener {
     private final CombatPolicyRegistry combatPolicies;
     private final TemporaryItemTagger temporaryItems;
     private final SessionViolationHandler violations;
+    private final Function<PlayerSession, GameMode> expectedTemporaryMode;
 
     public SessionIsolationListener(
             Plugin owner,
@@ -63,20 +67,52 @@ public final class SessionIsolationListener implements Listener {
             CombatPolicyRegistry combatPolicies,
             TemporaryItemTagger temporaryItems,
             SessionViolationHandler violations) {
+        this(owner, sessions, authentication, combatPolicies, temporaryItems, violations,
+                ignored -> GameMode.ADVENTURE);
+    }
+
+    public SessionIsolationListener(
+            Plugin owner,
+            SessionRegistry sessions,
+            AuthenticationRegistry authentication,
+            CombatPolicyRegistry combatPolicies,
+            TemporaryItemTagger temporaryItems,
+            SessionViolationHandler violations,
+            Function<PlayerSession, GameMode> expectedTemporaryMode) {
         this.owner = Objects.requireNonNull(owner, "owner");
         this.sessions = Objects.requireNonNull(sessions, "sessions");
         this.authentication = Objects.requireNonNull(authentication, "authentication");
         this.combatPolicies = Objects.requireNonNull(combatPolicies, "combatPolicies");
         this.temporaryItems = Objects.requireNonNull(temporaryItems, "temporaryItems");
         this.violations = Objects.requireNonNull(violations, "violations");
+        this.expectedTemporaryMode = Objects.requireNonNull(expectedTemporaryMode, "expectedTemporaryMode");
     }
 
-    /** Sumo and Hot Potato never create world entities; keep their immutable policy explicit. */
+    /** Protects the fixed Elytra and phase-owned Build Battle modes from delayed world enforcement. */
+    @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = false)
+    public void onGameModeChange(PlayerGameModeChangeEvent event) {
+        Optional<PlayerSession> session = sessions.findByPlayer(event.getPlayer().getUniqueId())
+                .filter(value -> value.phase() == SessionPhase.PREPARING || value.phase() == SessionPhase.ACTIVE)
+                .filter(value -> value.game() == GameKey.ELYTRA_RINGS || value.game() == GameKey.BUILD_BATTLE);
+        if (session.isEmpty()) return;
+        try {
+            GameMode expected = Objects.requireNonNull(expectedTemporaryMode.apply(session.orElseThrow()),
+                    "Expected temporary game mode policy returned null");
+            if (event.getNewGameMode() != expected) event.setCancelled(true);
+        } catch (RuntimeException unavailable) {
+            event.setCancelled(true);
+        }
+    }
+
+    /** These immutable games never create world entities. */
     @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = false)
     public void onProjectileLaunch(ProjectileLaunchEvent event) {
         if (event.getEntity().getShooter() instanceof Player player) {
             isolated(player).filter(session -> session.game() == GameKey.KNOCKBACK_SUMO
-                    || session.game() == GameKey.HOT_POTATO).ifPresent(session -> event.setCancelled(true));
+                    || session.game() == GameKey.HOT_POTATO
+                    || session.game() == GameKey.CHECKPOINT_PARKOUR || session.game() == GameKey.BUILD_BATTLE
+                    || session.game() == GameKey.ANVIL_DODGE || session.game() == GameKey.COLOR_FLOOR)
+                    .ifPresent(session -> event.setCancelled(true));
         }
     }
 

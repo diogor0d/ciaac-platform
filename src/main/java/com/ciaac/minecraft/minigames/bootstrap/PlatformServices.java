@@ -22,6 +22,9 @@ import java.util.EnumMap;
 import java.util.EnumSet;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Optional;
+import com.ciaac.minecraft.minigames.paper.isolation.AnvilHazardOwnership;
+import com.ciaac.minecraft.minigames.paper.buildbattle.BuildBattleResetPort;
 import java.util.Set;
 import org.bukkit.plugin.Plugin;
 
@@ -44,7 +47,9 @@ public record PlatformServices(
         AuditRepository audit,
         AnnouncementDispatcher announcements,
         IsolationPolicy isolationPolicy,
-        Map<GameKey, Set<PlayerStateFacet>> supportedIsolationFacetsByGame) {
+        Map<GameKey, Set<PlayerStateFacet>> supportedIsolationFacetsByGame,
+        Optional<AnvilHazardOwnership> anvilHazards,
+        Optional<BuildBattleResetPort> buildBattleReset) {
     public PlatformServices {
         Objects.requireNonNull(plugin, "plugin");
         Objects.requireNonNull(configuration, "configuration");
@@ -64,11 +69,39 @@ public record PlatformServices(
         Objects.requireNonNull(announcements, "announcements");
         Objects.requireNonNull(isolationPolicy, "isolationPolicy");
         Objects.requireNonNull(supportedIsolationFacetsByGame, "supportedIsolationFacetsByGame");
+        anvilHazards = Objects.requireNonNull(anvilHazards, "anvilHazards");
+        buildBattleReset = Objects.requireNonNull(buildBattleReset, "buildBattleReset");
         EnumMap<GameKey, Set<PlayerStateFacet>> supported = new EnumMap<>(GameKey.class);
         for (GameKey game : GameKey.values()) {
             supported.put(game, Set.copyOf(supportedIsolationFacetsByGame.getOrDefault(game, Set.of())));
         }
         supportedIsolationFacetsByGame = Map.copyOf(supported);
+    }
+
+    /** Existing callers do not acquire authority to reset native plots by listing facets. */
+    public PlatformServices(Plugin plugin, RuntimeConfiguration configuration, Clock clock,
+            SqliteDatabase database, AuthenticationRegistry authentication, ConnectionRegistry connections,
+            AdmissionRequestFactory admissionRequests, SessionRegistry sessions, SessionCoordinator sessionCoordinator,
+            ProtectedRegionRegistry regions, RegionAdmissionRegistry regionAdmissions, CombatPolicyRegistry combatPolicies,
+            TemporaryItemTagger temporaryItems, StatisticsRepository statistics, AuditRepository audit,
+            AnnouncementDispatcher announcements, IsolationPolicy isolationPolicy,
+            Map<GameKey, Set<PlayerStateFacet>> supportedIsolationFacetsByGame, Optional<AnvilHazardOwnership> anvilHazards) {
+        this(plugin, configuration, clock, database, authentication, connections, admissionRequests, sessions,
+                sessionCoordinator, regions, regionAdmissions, combatPolicies, temporaryItems, statistics, audit,
+                announcements, isolationPolicy, supportedIsolationFacetsByGame, anvilHazards, Optional.empty());
+    }
+
+    /** Existing callers do not gain native marker ownership merely by supplying facet names. */
+    public PlatformServices(Plugin plugin, RuntimeConfiguration configuration, Clock clock,
+            SqliteDatabase database, AuthenticationRegistry authentication, ConnectionRegistry connections,
+            AdmissionRequestFactory admissionRequests, SessionRegistry sessions, SessionCoordinator sessionCoordinator,
+            ProtectedRegionRegistry regions, RegionAdmissionRegistry regionAdmissions, CombatPolicyRegistry combatPolicies,
+            TemporaryItemTagger temporaryItems, StatisticsRepository statistics, AuditRepository audit,
+            AnnouncementDispatcher announcements, IsolationPolicy isolationPolicy,
+            Map<GameKey, Set<PlayerStateFacet>> supportedIsolationFacetsByGame) {
+        this(plugin, configuration, clock, database, authentication, connections, admissionRequests, sessions,
+                sessionCoordinator, regions, regionAdmissions, combatPolicies, temporaryItems, statistics, audit,
+                announcements, isolationPolicy, supportedIsolationFacetsByGame, Optional.empty());
     }
 
     /** Source-compatible constructor for callers whose facet catalog is shared by every game. */

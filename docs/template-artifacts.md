@@ -1,10 +1,20 @@
 # Artefactos de templates nativos
 
-- Estado: `SOURCE-VERIFIED` em 2026-08-22; `UNVERIFIED`.
+- Estado em 2026-10-07: captura controlada e provider/ledger do Piso das Cores
+  `SOURCE-VERIFIED`; conclusão, saída, desconexão e crash passaram nos casos
+  nativos delimitados descritos abaixo. A captura de 96 células e a captura
+  alargada de 4096 células foram lidas de volta no Paper local. O candidato atual
+  também passou um crash frio depois de 3712 células azuis confirmadas em AIR,
+  com as 4096 células e o estado dos jogadores restaurados.
+- Candidato Color Floor `e53c89f00e1ec08879ad6dad8a74a0d3722d69b548b93e0e04ee96b1eb263d3f`:
+  548 testes, 547 aprovados, um ignorado, zero falhas/erros. Candidato geral
+  mais recente `7ff23154714b105720bf1fd376deed69af4f0897267a880395f4733d331a6dd2`:
+  563 testes, 562 aprovados, um ignorado, zero falhas/erros.
 - Âmbito: artefactos só de leitura e revistos pelo operador, consumidos pelos
   adaptadores nativos de reset de Build Battle e de templates de Color Floor.
-- Autoridade: o artefacto é uma entrada do operador, não uma captura do mundo
-  ativo nem um registo de implantação. O código não fornece uma ferramenta de captura.
+- Autoridade: o artefacto é uma entrada do operador, não um registo de
+  implantação. Há captura controlada do Piso das Cores a partir do mundo
+  carregado; continua sem existir ferramenta de captura de Build Battle.
 
 ## Localização e propriedade
 
@@ -19,6 +29,9 @@ O assembler atual cria o repositório em
 limitados; traversal de caminhos, ficheiros symlink, ficheiros em falta e
 ficheiros acima do limite de leitura de 64 MiB são rejeitados. O repositório
 nunca escreve artefactos nem lê dados de blocos ativos durante o carregamento.
+O comando de preparação do Piso das Cores escreve separadamente um novo
+artefacto nesse diretório, em modo create-only, e exige leitura posterior
+validada pelo repositório. Nunca substitui um ficheiro existente.
 
 O checksum é uma verificação de integridade, não uma assinatura. A revisão
 humana do operador, o procedimento de manutenção e a identidade do servidor
@@ -145,20 +158,24 @@ alterações não usam física nem criam drops normais de blocos.
 
 ## Preparação do operador
 
-Este é um contrato de preparação e validação, não um procedimento de implantação:
+Este é um contrato de preparação e validação, não um procedimento de ativação:
 
 1. No servidor Paper alvo, registar o UUID exato do mundo e o nome carregado,
    respeitando maiúsculas/minúsculas. Não inferir nenhum valor a partir de uma cópia local.
 2. Confirmar os limites configurados. Para Build Battle, calcular a partir de
    todas as regiões de parcelas como faz o assembler; para Color Floor, usar a
    região `floor` resolvida. Manter o volume resultante em 1 000 000 blocos ou menos.
-3. Produzir o artefacto de texto através de um processo offline revisto
-   independentemente. Não está implementada captura automática ativa nem amostragem no arranque.
+3. Para Build Battle, produzir o artefacto de texto por um processo offline
+   revisto independentemente; não existe ferramenta de captura desse mundo.
+   Para Piso das Cores, usar o comando local descrito abaixo, que amostra apenas
+   as células configuradas e atualmente carregadas.
 4. Garantir que cada coordenada inclusiva tem exatamente uma linha de bloco; no
    Color Floor, acrescentar também exatamente uma linha de cor válida.
-5. Calcular o checksum canónico, revê-lo independentemente e colocar o ficheiro
-   em `<plugin-data>/templates/<artifact-id>.template` durante uma janela de
-   manutenção autorizada.
+5. Para Build Battle, calcular e rever o checksum e colocar o ficheiro em
+   `<plugin-data>/templates/<artifact-id>.template` durante manutenção
+   autorizada. Para Piso das Cores, a ferramenta calcula o SHA-256, cria o
+   artefacto `immutable-floor-template` apenas se o destino ainda não existir e
+   confirma a leitura pelo repositório antes de reportar sucesso.
 6. Validar que todos os chunks relevantes já estão carregados antes de tentar
    um reset ou uma ronda Color Floor. Os adaptadores falham de forma segura em
    vez de carregarem chunks a pedido.
@@ -166,9 +183,77 @@ Este é um contrato de preparação e validação, não um procedimento de impla
    mundo descartável antes de considerar uma partida de produção.
 
 Este repositório não deve conter coordenadas ativas, ficheiros de mundos,
-segredos, passos de implantação, comando de captura ou percurso de eliminação/
-recriação de mundos. Um checksum não autoriza um artefacto nem prova que este
-foi revisto.
+segredos ou percurso de eliminação/recriação de mundos. Um checksum não
+autoriza um artefacto nem prova que este foi revisto.
+
+### Comandos locais de preparação
+
+Os comandos estão autorizados apenas pela consola local do servidor e pela
+thread principal. Não exigem `ciaac.minigames.admin` nem uma concessão de
+permissão: jogadores, command blocks e consola remota são sempre recusados.
+A grafia do comando raiz inclui o acento:
+
+```text
+/ciaac instalações mundo <nome-exato>
+/ciaac instalações validar
+/ciaac instalações capturar-cores
+```
+
+`mundo` consulta apenas mundos já carregados e devolve o nome exato, UUID e
+alturas mínima/máxima. `validar` mostra a resolução da configuração de origem e
+a disponibilidade corrente dos módulos; não executa mecânicas, testes de
+recuperação ou aceitação nativa.
+
+`capturar-cores` exige configuração válida e explicitamente ativada para o
+Piso das Cores, revisão/resolução de mundo coerentes e ausência de qualquer
+sessão ativa, recuperação pendente ou quarentena. A captura só lê chunks já
+carregados, uma grelha de uma camada com até 4096 células, cada uma composta por
+lã ou betão de uma das sete cores permitidas e pertencente à paleta configurada.
+Não carrega chunks nem altera blocos. O comando cria apenas
+`immutable-floor-template.template`, calcula e valida o SHA-256 e confirma a
+leitura do artefacto pelo repositório. Destino existente ou caminho inseguro
+recusa a operação; não há opção de sobrescrita.
+
+Verificação no Paper local: a consola capturou e validou por leitura posterior
+templates de exatamente 96 e 4096 células numa camada, sem edição manual de UUID
+ou checksum. No candidato Color Floor acima, conclusão nativa produziu
+`VICTORY` / `COMPLETED`; saída produziu `PLAYER_LEFT`; e desconexão produziu
+`PLAYER_DISCONNECTED`. Os 18 campos foram restaurados exatamente em cada caso e
+as 96 células foram comparadas nativamente com o template. Um crash após AIR
+nativo também restaurou dois jogadores e comparou as 96 células. No ensaio de
+4096 células no candidato `e53c89f…`, a captura e leitura do artefacto passaram;
+após crash com AIR nativo observado, os 18 campos foram restaurados e todas as
+4096 células foram comparadas positivamente com o template. Esse checkpoint
+anterior não guardou o número exato de células AIR. No candidato atual
+`7ff23154714b105720bf1fd376deed69af4f0897267a880395f4733d331a6dd2`, uma
+referência nativa de 4096 células AIR foi preparada em Y=120; o comando
+`execute if blocks` confirmou que os 3712 blocos azuis da secção completa do
+piso estavam em AIR antes de `save-all` e SIGKILL apenas do subprocesso Paper.
+Após reinício frio e login
+AuthMe normal, os 18 campos de cada jogador foram restaurados, as 4096 células
+foram comparadas nativamente com o template e 12 sessões ficaram `CLOSED` com
+12 snapshots `RESTORED`. O ensaio comprova recuperação fria após remoção nativa
+superior a 256 blocos nessa secção; a evidência não generaliza para outros
+cenários ou declara prontidão global.
+
+A tentativa anterior que deixou duas sessões `QUARANTINED` por rejeição do
+teleporte de restauro mantém-se arquivada como evidência histórica; os ensaios
+posteriores usaram runtime novo, sem limpar artificialmente a quarentena antiga.
+Uma captura duplicada recusou corretamente o artefacto existente sem o
+substituir. A tentativa de preenchimento sem confirmação de chunks carregados
+foi recusada; a captura alargada só foi repetida depois de o fixture observar a
+carga dos chunks. A ferramenta de Build Battle continua em falta, e os casos
+nativos delimitados não constituem declaração de prontidão global.
+
+Para uma instalação nova, mantém os outros módulos fechados, configura
+explicitamente `admission.enabled: true` e `modules.color-floor.enabled: true`
+com geometria válida, e inicia o servidor normalmente. Sem o template, o modo
+continua fechado. Depois de carregar a região e os chunks relevantes, executa
+`capturar-cores` na consola local quando todas as sessões e recuperações
+estiverem drenadas. Faz um reinício normal e controlado para carregar o novo
+artefacto; não uses `/reload` nem esperes ativação implícita. Depois consulta
+`validar` e confirma a disponibilidade/configuração reportadas. Esse resultado
+não substitui aceitação nativa, testes de jogo/restauro ou a suite completa.
 
 ## Estado das falhas e da verificação
 
@@ -179,8 +264,7 @@ discrepância de UUID/nome do mundo, chunks descarregados, violações da thread
 principal ou escritas interrompidas devem fechar o módulo relevante ou manter a
 recuperação, em vez de adivinhar um template.
 
-O código inclui testes específicos dos templates e verificações estáticas, mas
-a fase completa Maven/testes está adiada. Nenhum mundo Paper ativo, prontidão de
-chunks, instalação de artefacto, reset, alteração Color Floor ou percurso de
-recuperação foi
-`RUNTIME-VERIFIED`.
+Em 2026-10-07, os 24 testes focados do fluxo de captura/exportação e as suites
+dos candidatos indicados acima passaram. A captura real, os casos nativos
+delimitados e as comparações descritas acima passaram no Paper local. Build
+Battle continua sem ferramenta de captura.

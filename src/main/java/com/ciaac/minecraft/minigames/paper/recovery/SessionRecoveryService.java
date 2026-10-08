@@ -68,6 +68,15 @@ public final class SessionRecoveryService implements SessionViolationHandler {
         return loaded;
     }
 
+    /** Bounded world batches may need later ticks after the authenticated recovery event. */
+    public synchronized void retryPendingWorldRecovery(Player player) {
+        PlayerSession session = registry.findByPlayer(player.getUniqueId()).orElse(null);
+        if (session == null || session.game() != com.ciaac.minecraft.minigames.core.GameKey.COLOR_FLOOR
+                || (session.phase() != SessionPhase.RECOVERING && session.phase() != SessionPhase.RESTORING)
+                || !isCurrentlyAuthenticated(player)) return;
+        onAuthenticated(player);
+    }
+
     /** Called only after connection-bound authentication and provider state completion. */
     public synchronized AdmissionResult onAuthenticated(Player player) {
         Objects.requireNonNull(player, "player");
@@ -174,6 +183,7 @@ public final class SessionRecoveryService implements SessionViolationHandler {
     }
 
     private boolean isCurrentlyAuthenticated(Player player) {
+        if (!player.isOnline() || !player.isValid()) return false;
         AuthenticatedSession evidence = authentication.current(player.getUniqueId(), clock.instant()).orElse(null);
         return evidence != null && evidence.playerId().equals(player.getUniqueId())
                 && connections.isCurrent(player, evidence.connectionId());

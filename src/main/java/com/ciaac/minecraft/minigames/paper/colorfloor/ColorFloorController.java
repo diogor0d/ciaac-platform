@@ -34,6 +34,7 @@ import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
+import java.util.function.Predicate;
 import org.bukkit.Bukkit;
 import org.bukkit.GameMode;
 import org.bukkit.Location;
@@ -66,6 +67,8 @@ public final class ColorFloorController {
     private final ProtectedRegionRegistry regions;
     private final Clock clock;
     private final StatisticsResultSink statistics;
+    private final Predicate<PlayerSession> restorationReady;
+    private final Set<UUID> departingPlayers = new LinkedHashSet<>();
     private final Map<ColorFloorCell, BlockData> mutated = new HashMap<>();
     private long operationSequence;
     private Instant announceStarted;
@@ -94,6 +97,14 @@ public final class ColorFloorController {
                                 SessionCoordinator sessions, SessionRegistry sessionRegistry,
                                 RegionAdmissionRegistry admissions, ProtectedRegionRegistry regions,
                                 Clock clock, StatisticsResultSink statistics) {
+        this(matchId, game, settings, sessions, sessionRegistry, admissions, regions, clock, statistics,
+                session -> false);
+    }
+
+    public ColorFloorController(UUID matchId, ColorFloorGame game, ColorFloorPaperSettings settings,
+                                SessionCoordinator sessions, SessionRegistry sessionRegistry,
+                                RegionAdmissionRegistry admissions, ProtectedRegionRegistry regions,
+                                Clock clock, StatisticsResultSink statistics, Predicate<PlayerSession> restorationReady) {
         this.matchId = Objects.requireNonNull(matchId, "matchId");
         this.game = Objects.requireNonNull(game, "game");
         this.settings = Objects.requireNonNull(settings, "settings");
@@ -103,6 +114,7 @@ public final class ColorFloorController {
         this.regions = Objects.requireNonNull(regions, "regions");
         this.clock = Objects.requireNonNull(clock, "clock");
         this.statistics = Objects.requireNonNull(statistics, "statistics");
+        this.restorationReady = Objects.requireNonNull(restorationReady, "restorationReady");
     }
 
     public synchronized AdmissionResult join(Player player, AdmissionRequest request, RegionAdmissionToken token) {
@@ -124,7 +136,10 @@ public final class ColorFloorController {
         try {
             if (game.phase() == ColorFloorPhase.DISABLED) game.open(nextOperation());
             teleport(player, settings.start());
-            sessions.activate(session.sessionId(), OperationIds.derive(request.requestId(), "GAME_ACTIVE"), clock.instant());
+            if (!sessions.activate(session.sessionId(),
+                    OperationIds.derive(request.requestId(), "GAME_ACTIVE"), clock.instant())) {
+                throw new IllegalStateException("session activation was not applied");
+            }
             game.join(player.getUniqueId(), nextOperation());
             admittedPlayers++;
             player.sendMessage("§aChão de Cores: estás na fila. Prepara-te!");
@@ -145,6 +160,11 @@ public final class ColorFloorController {
                 .orElseThrow(() -> new IllegalArgumentException("No active session"));
         if (!session.matchId().equals(matchId)) throw new IllegalArgumentException("Session belongs to another match");
         recoverAll(rootOperationId, "PLAYER_LEFT");
+        if (session.phase() != SessionPhase.CLOSED) {
+            return new AdmissionResult(session.phase() == SessionPhase.QUARANTINED
+                    ? AdmissionStatus.QUARANTINED : AdmissionStatus.REJECTED, "RECOVERY_PENDING",
+                    "Saíste da partida; o teu estado continua protegido enquanto o restauro termina.", Optional.of(session));
+        }
         return new AdmissionResult(AdmissionStatus.RECOVERED, "LEFT",
                 "Saíste do Chão de Cores e o teu estado foi restaurado.", Optional.of(session));
     }
@@ -183,7 +203,8 @@ public final class ColorFloorController {
         if (recoveryPending) {
             if (!ensureRestoreBatch()) return;
             if (pendingRestore != null) return;
-            completeRecovery();
+            recoverAll(UUID.nameUUIDFromBytes((matchId + ":COLOR_RECOVERY").getBytes(StandardCharsets.UTF_8)),
+                    recoveryReason == null ? "RECOVERY" : recoveryReason);
             return;
         }
         if (game.phase() == ColorFloorPhase.WAITING
@@ -236,10 +257,12 @@ public final class ColorFloorController {
     }
 
     public synchronized void onTeleport(PlayerTeleportEvent event) {
-        if (!internalTeleport && sessionRegistry.findByPlayer(event.getPlayer().getUniqueId())
-                .filter(s -> s.matchId().equals(matchId) && !s.phase().terminal()).isPresent()) {
-            event.setCancelled(true);
-        }
+        if (internalTeleport) return;
+        sessionRegistry.findByPlayer(event.getPlayer().getUniqueId())
+                .filter(s -> s.matchId().equals(matchId) && !s.phase().terminal())
+                .filter(s -> event.getCause() != PlayerTeleportEvent.TeleportCause.PLUGIN
+                        || (s.phase() != SessionPhase.RESTORING && s.phase() != SessionPhase.RECOVERING))
+                .ifPresent(s -> event.setCancelled(true));
     }
 
     public synchronized void onBlockBreak(BlockBreakEvent event) {
@@ -253,6 +276,7 @@ public final class ColorFloorController {
     public synchronized void onDisconnect(UUID playerId, UUID rootOperationId) {
         Objects.requireNonNull(playerId, "playerId");
         if (sessionRegistry.findByPlayer(playerId).filter(s -> s.matchId().equals(matchId)).isEmpty()) return;
+        departingPlayers.add(playerId);
         recoverAll(rootOperationId, "PLAYER_DISCONNECTED");
     }
 
@@ -467,8 +491,8 @@ public final class ColorFloorController {
                 && request.game() == GameKey.COLOR_FLOOR && request.matchId().equals(matchId)
                 && token.playerId().equals(player.getUniqueId()) && token.sessionId().equals(request.sessionId())
                 && token.regionId().equals(settings.participantRegionId()) && token.validAt(now)
-                && !recoveryPending && game.phase() != ColorFloorPhase.RECOVERING
-                && game.phase() != ColorFloorPhase.CLOSED && validRegion() && settings.start() != null
+                && !recoveryPending && (game.phase() == ColorFloorPhase.DISABLED || game.phase() == ColorFloorPhase.WAITING)
+                && admittedPlayers < settings.config().maximumPlayers() && validRegion() && settings.start() != null
                 && settings.world().isChunkLoaded(settings.start().getBlockX() >> 4, settings.start().getBlockZ() >> 4);
     }
 
@@ -502,11 +526,22 @@ public final class ColorFloorController {
                 return;
             }
         }
-        boolean restored = recoverySessionsRestored;
+        recoveryPlayers = Set.copyOf(players);
+        if (recoveryReason == null) recoveryReason = reason;
+        recoveryPending = true;
+        admittedPlayers = 0;
+        activeSessions.forEach(session -> admissions.revokeSession(session.sessionId()));
+        // Finish the owned floor before releasing any player's survival state.
+        if (!ensureRestoreBatch() || pendingRestore != null) return;
+        boolean restored = true;
         for (PlayerSession session : activeSessions) {
             if (session.phase() == SessionPhase.QUARANTINED) {
                 restored = false;
             } else if (!session.phase().terminal()) {
+                if (departingPlayers.contains(session.playerId()) || !restorationReady.test(session)) {
+                    restored = false;
+                    continue;
+                }
                 try {
                     restored &= sessions.recover(session.sessionId(), OperationIds.derive(root, "RECOVER_" + session.playerId()), reason)
                             .status() == AdmissionStatus.RECOVERED;
@@ -516,13 +551,8 @@ public final class ColorFloorController {
             }
             admissions.revokeSession(session.sessionId());
         }
-        recoveryPlayers = Set.copyOf(players);
-        recoveryReason = reason;
         recoverySessionsRestored = restored;
-        recoveryPending = true;
-        admittedPlayers = 0;
-        if (!ensureRestoreBatch()) return;
-        if (pendingRestore == null) completeRecovery();
+        completeRecovery();
     }
 
     private void completeRecovery() {
@@ -554,6 +584,10 @@ public final class ColorFloorController {
             if (session.phase() == SessionPhase.QUARANTINED) {
                 restored = false;
             } else if (!session.phase().terminal()) {
+                if (departingPlayers.contains(session.playerId()) || !restorationReady.test(session)) {
+                    restored = false;
+                    continue;
+                }
                 try {
                     restored &= sessions.finishAndRestore(session.sessionId(),
                                     OperationIds.derive(root, "FINISH_" + session.playerId()), reason)

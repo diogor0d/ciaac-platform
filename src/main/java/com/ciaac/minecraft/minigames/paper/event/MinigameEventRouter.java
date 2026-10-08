@@ -135,7 +135,10 @@ public final class MinigameEventRouter implements Listener {
         boolean route(PlayerInteractEvent event);
     }
 
-    public record ArcheryHit(int lane, int points, boolean bullseye) {
+    public record ArcheryHit(int lane, int points, boolean bullseye, UUID targetId) {
+        public ArcheryHit(int lane, int points, boolean bullseye) {
+            this(lane, points, bullseye, null);
+        }
         public ArcheryHit {
             if (lane < 0 || points < 0) throw new IllegalArgumentException("invalid archery hit");
         }
@@ -364,6 +367,14 @@ public final class MinigameEventRouter implements Listener {
         routeElytraRings(event, player);
     }
 
+    /** Score only movement accepted by every cancelling protection/anticheat listener. */
+    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
+    public void onAcceptedElytraMove(PlayerMoveEvent event) {
+        if (event instanceof PlayerTeleportEvent || event.isCancelled() || elytraRings == null) return;
+        ElytraRingsController controller = elytraRings.controller();
+        if (controller != null) controller.onAcceptedMove(event);
+    }
+
     @EventHandler(priority = EventPriority.LOWEST, ignoreCancelled = false)
     public void onTeleport(PlayerTeleportEvent event) {
         if (event.isCancelled()) return;
@@ -535,6 +546,14 @@ public final class MinigameEventRouter implements Listener {
         }
     }
 
+    @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = false)
+    public void onCreativeInventory(org.bukkit.event.inventory.InventoryCreativeEvent event) {
+        if (buildBattle == null || !(event.getWhoClicked() instanceof Player player)
+                || !inScope(policies.buildBattleParticipants(), player)) return;
+        try { buildBattle.controller().onCreativeInventory(event); }
+        catch (RuntimeException failure) { event.setCancelled(true); }
+    }
+
     @EventHandler(priority = EventPriority.LOWEST, ignoreCancelled = false)
     public void onBlockBreak(BlockBreakEvent event) {
         ColorFloorController color = colorFloor == null ? null : colorFloor.controller();
@@ -556,6 +575,12 @@ public final class MinigameEventRouter implements Listener {
             }
         }
         enforceBuildBattle(event.getPlayer(), event.getBlock().getLocation(), event);
+        if (buildBattle != null && inScope(policies.buildBattleParticipants(), event.getPlayer())) {
+            event.setDropItems(false);
+            event.setExpToDrop(0);
+            if (!com.ciaac.minecraft.minigames.paper.buildbattle.BuildBattleBlockPolicy.allows(event.getBlock().getBlockData()))
+                event.setCancelled(true);
+        }
     }
 
     @EventHandler(priority = EventPriority.LOWEST, ignoreCancelled = false)
@@ -579,10 +604,19 @@ public final class MinigameEventRouter implements Listener {
             }
         }
         enforceBuildBattle(event.getPlayer(), event.getBlockPlaced().getLocation(), event);
+        if (buildBattle != null && inScope(policies.buildBattleParticipants(), event.getPlayer())
+                && !com.ciaac.minecraft.minigames.paper.buildbattle.BuildBattleBlockPolicy.allows(event.getBlockPlaced().getBlockData())) {
+            event.setCancelled(true);
+            feedback(event.getPlayer(), "Usa blocos de construção sem inventários, líquidos ou mecanismos no Build Battle.");
+        }
     }
 
     @EventHandler(priority = EventPriority.LOWEST, ignoreCancelled = false)
     public void onBucketEmpty(PlayerBucketEmptyEvent event) {
+        if (buildBattle != null && inScope(policies.buildBattleParticipants(), event.getPlayer())) {
+            event.setCancelled(true);
+            return;
+        }
         if (!event.isCancelled()) {
             enforceBuildBattle(event.getPlayer(), event.getBlock().getLocation(), event);
         }
@@ -590,6 +624,10 @@ public final class MinigameEventRouter implements Listener {
 
     @EventHandler(priority = EventPriority.LOWEST, ignoreCancelled = false)
     public void onBucketFill(PlayerBucketFillEvent event) {
+        if (buildBattle != null && inScope(policies.buildBattleParticipants(), event.getPlayer())) {
+            event.setCancelled(true);
+            return;
+        }
         if (!event.isCancelled()) {
             enforceBuildBattle(event.getPlayer(), event.getBlock().getLocation(), event);
         }
@@ -600,7 +638,7 @@ public final class MinigameEventRouter implements Listener {
         if (event.isCancelled() || !(event.getEntity().getShooter() instanceof Player shooter)) return;
         if (archery != null && archery.runId(shooter.getUniqueId()).isPresent()) {
             try {
-                archery.controller().launch(shooter.getUniqueId(), event.getEntity().getUniqueId());
+                archery.controller().launch(shooter, event.getEntity());
             } catch (RuntimeException failure) {
                 event.setCancelled(true);
                 feedback(shooter, "O disparo foi recusado para proteger a sessão de tiro.");
@@ -642,8 +680,13 @@ public final class MinigameEventRouter implements Listener {
         }
         try {
             ArcheryHit result = hit.orElseThrow();
-            controller.onProjectileHit(shooter.getUniqueId(), projectile.getUniqueId(), result.lane(),
-                    result.points(), result.bullseye(), eventId("archery-hit", shooter));
+            if (result.targetId() != null) {
+                controller.onProjectileHit(shooter, projectile, result.targetId(),
+                        result.points(), result.bullseye(), eventId("archery-hit", shooter));
+            } else {
+                controller.onProjectileHit(shooter.getUniqueId(), projectile.getUniqueId(), result.lane(),
+                        result.points(), result.bullseye(), eventId("archery-hit", shooter));
+            }
         } catch (RuntimeException failure) {
             cleanupProjectile(controller, projectile.getUniqueId());
             event.setCancelled(true);
@@ -759,8 +802,17 @@ public final class MinigameEventRouter implements Listener {
         if (parkour == null) return;
         if (parkour.runId(player.getUniqueId()).isEmpty()) return;
         if (!contains(policies.parkourLane(), player, destination)) {
-            event.setCancelled(true);
-            feedback(player, "Não podes sair do percurso de parkour.");
+            try {
+                parkour.controller().onFallOrLeave(player.getUniqueId(), eventId("parkour-boundary", player));
+                // Keep the actual controller reset/restoration destination. Cancelling
+                // after its teleport would let Paper undo that reset.
+                event.setTo(player.getLocation());
+                feedback(player, "Não podes sair do percurso de parkour.");
+            } catch (RuntimeException failure) {
+                event.setCancelled(true);
+                feedback(player, "O movimento foi recusado para proteger a corrida.");
+            }
+            return;
         }
         OptionalInt checkpoint;
         try {
@@ -775,6 +827,12 @@ public final class MinigameEventRouter implements Listener {
                 parkour.controller().onCheckpoint(player.getUniqueId(), checkpoint.getAsInt(),
                         eventId("parkour-checkpoint", player));
                 rememberParkourCheckpoint(player, checkpoint.getAsInt());
+                if (parkour.controller().runId(player.getUniqueId()).isEmpty()) {
+                    // Completion restores during this event. Keeping the old destination would
+                    // let Paper/region protection undo the recovery teleport.
+                    event.setTo(player.getLocation());
+                    return;
+                }
             } catch (RuntimeException failure) {
                 event.setCancelled(true);
                 feedback(player, "Esse checkpoint não foi validado; a corrida permanece protegida.");
@@ -782,7 +840,11 @@ public final class MinigameEventRouter implements Listener {
             }
         }
         try {
-            if (!parkour.controller().onMove(player, destination)) event.setCancelled(true);
+            if (!parkour.controller().onMove(player, destination)) {
+                // The controller has already reset or restored the player. Cancelling
+                // this event would make Paper return to its pre-reset position.
+                event.setTo(player.getLocation());
+            }
         } catch (RuntimeException failure) {
             event.setCancelled(true);
             feedback(player, "O movimento foi recusado para proteger a corrida.");
@@ -1057,7 +1119,6 @@ public final class MinigameEventRouter implements Listener {
 
     private void enforceBuildBattle(Player player, Location location, org.bukkit.event.Cancellable event) {
         if (buildBattle == null) return;
-        if (!buildBattleBuilding()) return;
         if (!inScope(policies.buildBattleParticipants(), player)) return;
         boolean allowed;
         try {

@@ -215,7 +215,7 @@ public final class ArcheryPaperController {
     }
 
     public synchronized Status status() {
-        boolean ready = settings.enabled() && allRegionsValid() && !scoreBands.isEmpty();
+        boolean ready = settings.enabled() && allRegionsValid() && allTargetsReady();
         String message = ready ? "Livre" : "Fechado";
         return new Status(ready, activeByPlayer.size(), lanes.size(), message);
     }
@@ -246,10 +246,10 @@ public final class ArcheryPaperController {
         if (request.game() != GameKey.ARCHERY_RANGE) {
             return AdmissionResult.rejected("GAME_MISMATCH", "A sessão de tiro não é válida.");
         }
-        if (!allRegionsValid()) {
+        if (!allRegionsValid() || !allTargetsReady()) {
             return AdmissionResult.rejected(
                     "CONFIGURATION_UNAVAILABLE",
-                    "O campo de tiro está fechado até todas as lanes serem validadas.");
+                    "O campo de tiro está fechado até todas as lanes e os quatro alvos serem validados.");
         }
         UUID playerId = player.getUniqueId();
         if (activeByPlayer.containsKey(playerId)) {
@@ -452,7 +452,7 @@ public final class ArcheryPaperController {
         String band = target.band();
         if (band == null) {
             band = uniqueBandFor(points, bullseye);
-        } else if (target.points() != points || !band.equals("bullseye") != bullseye) {
+        } else if (target.points() != points || band.equals("bullseye") != bullseye) {
             discardProjectile(projectileId);
             throw new IllegalArgumentException("target score does not match server configuration");
         }
@@ -538,6 +538,15 @@ public final class ArcheryPaperController {
 
     public synchronized Set<UUID> activePlayers() {
         return Set.copyOf(new LinkedHashSet<>(activeByPlayer.keySet()));
+    }
+
+    private boolean allTargetsReady() {
+        try {
+            return lanes.values().stream().allMatch(lane -> PaperArcheryTargetProbe.ready(
+                    lane, regions.find(lane.regionId()).orElse(null), scoreBands));
+        } catch (RuntimeException unavailable) {
+            return false;
+        }
     }
 
     private void processHit(
@@ -762,7 +771,7 @@ public final class ArcheryPaperController {
         if (band == null
                 || scoreBands.get(band) == null
                 || scoreBands.get(band) != points
-                || !band.equals("bullseye") == bullseye) {
+                || band.equals("bullseye") != bullseye) {
             throw new IllegalArgumentException("score does not match server configuration");
         }
     }

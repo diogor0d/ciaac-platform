@@ -53,7 +53,8 @@ class ArenaWorldStatePortTest {
             assertEquals(2, environment.port.contractVersion());
             assertEquals(1, environment.port.snapshotVersion());
             assertEquals(Set.of(PlayerStateFacet.TEMPORARY_WORLD_BLOCKS_AND_ENTITIES), environment.port.facets());
-            assertEquals(Set.of(GameKey.ARENA, GameKey.KNOCKBACK_SUMO, GameKey.HOT_POTATO), environment.port.supportedGames());
+            assertEquals(Set.of(GameKey.ARENA, GameKey.KNOCKBACK_SUMO, GameKey.HOT_POTATO,
+                    GameKey.CHECKPOINT_PARKOUR, GameKey.ARCHERY_RANGE), environment.port.supportedGames());
             assertFalse(environment.port.available());
 
             assertThrows(IllegalStateException.class, () -> environment.port.capture(player, capture));

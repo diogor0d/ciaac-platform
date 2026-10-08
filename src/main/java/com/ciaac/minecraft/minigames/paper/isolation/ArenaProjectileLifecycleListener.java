@@ -42,6 +42,9 @@ public final class ArenaProjectileLifecycleListener implements Listener, AutoClo
     private final RegionAdmissionRegistry admissions;
     private final SessionViolationHandler violations;
     private final Clock clock;
+    private AnvilHazardOwnership anvilHazards;
+    private ElytraFireworkOwnership elytraFireworks;
+    private java.util.function.Supplier<com.ciaac.minecraft.minigames.paper.elytrarings.ElytraRingsController> elytraController;
     private boolean closed;
 
     public ArenaProjectileLifecycleListener(Plugin owner, ArenaWorldLedger ledger, ArenaProjectileOwnership ownership,
@@ -56,11 +59,97 @@ public final class ArenaProjectileLifecycleListener implements Listener, AutoClo
         this.violations = Objects.requireNonNull(violations, "violations"); this.clock = Objects.requireNonNull(clock, "clock");
     }
 
+    /** Installed before native listeners are registered; shares the same shutdown boundary. */
+    public void anvilHazards(AnvilHazardOwnership hazards) {
+        if (closed || anvilHazards != null) throw new IllegalStateException("Anvil native lifecycle is already frozen");
+        anvilHazards = Objects.requireNonNull(hazards);
+    }
+
+    public void elytraFireworks(ElytraFireworkOwnership fireworks,
+            java.util.function.Supplier<com.ciaac.minecraft.minigames.paper.elytrarings.ElytraRingsController> controller) {
+        if (closed || elytraFireworks != null) throw new IllegalStateException("Elytra native lifecycle is already frozen");
+        elytraFireworks = Objects.requireNonNull(fireworks);
+        elytraController = Objects.requireNonNull(controller);
+    }
+
+    /** Paper fires this before delayed native insertion; rejected boosts never gain ownership. */
+    @EventHandler(priority = EventPriority.LOWEST, ignoreCancelled = false)
+    public void boost(com.destroystokyo.paper.event.player.PlayerElytraBoostEvent event) {
+        if (closed || event.isCancelled()) return;
+        Player player = event.getPlayer();
+        var found = sessions.findByPlayer(player.getUniqueId()).filter(session ->
+                session.game() == GameKey.ELYTRA_RINGS && session.phase().isolationActive());
+        if (found.isEmpty()) return;
+        PlayerSession session = found.orElseThrow();
+        boolean attempted = false;
+        try {
+            var controller = elytraController == null ? null : elytraController.get();
+            if (elytraFireworks == null || controller == null || !controller.allowsRocketBoost(event)) {
+                event.setCancelled(true);
+                return;
+            }
+            var lease = ledger.requireLease(session.sessionId());
+            var auth = authentication.current(player.getUniqueId(), clock.instant()).orElseThrow();
+            var connection = connections.current(player.getUniqueId()).orElseThrow();
+            var region = regions.at(player.getLocation()).orElseThrow();
+            if (!worldState.available() || session.phase() != SessionPhase.ACTIVE
+                    || owner.getServer().getPlayer(player.getUniqueId()) != player
+                    || !connections.isCurrent(player, auth.connectionId()) || !connection.id().equals(auth.connectionId())
+                    || !lease.capture().capturedConnectionId().equals(auth.connectionId())
+                    || !lease.capture().matchId().equals(session.matchId()) || lease.capture().game() != GameKey.ELYTRA_RINGS
+                    || region.game() != GameKey.ELYTRA_RINGS || !region.requiresAdmission()
+                    || !admissions.permits(player.getUniqueId(), session.sessionId(), region.id(), clock.instant()))
+                throw new IllegalStateException("Elytra boost has no current authenticated course admission");
+            attempted = true;
+            elytraFireworks.beforeAdd(lease.capture(), event.getFirework());
+            event.setShouldConsume(true);
+            schedule(() -> {
+                try { settleFirework(event.getFirework()); }
+                catch (RuntimeException failure) { closeProvider(); fail(player, session); }
+            });
+        } catch (RuntimeException failure) {
+            reportFailure("ELYTRA_BOOST", failure);
+            event.setCancelled(true);
+            if (attempted) closeProvider();
+            boolean reconcileIntent = attempted;
+            schedule(() -> {
+                if (reconcileIntent) {
+                    try {
+                        if (ledger.findEntity(event.getFirework().getUniqueId()).isPresent()) settleFirework(event.getFirework());
+                    } catch (RuntimeException ambiguous) { closeProvider(); }
+                }
+                fail(player, session);
+            });
+        }
+    }
+
+    private void settleFirework(Entity entity) {
+        if (entity.isValid() && owner.getServer().getEntity(entity.getUniqueId()) == entity) reconcile(entity, true);
+        else if (!entity.isInWorld() && ledger.findEntity(entity.getUniqueId()).orElseThrow().status() == ArenaWorldLedger.EntityStatus.PENDING)
+            elytraFireworks.cancelledBeforeAdd(entity);
+        else elytraFireworks.afterUntracking(entity);
+    }
+
     @EventHandler(priority = EventPriority.LOWEST, ignoreCancelled = false)
     public void launch(ProjectileLaunchEvent event) {
         if (closed) return;
+        if (event.getEntity() instanceof org.bukkit.entity.Firework firework && firework.getSpawningEntity() != null) {
+            var session = sessions.findByPlayer(firework.getSpawningEntity()).filter(value ->
+                    value.game() == GameKey.ELYTRA_RINGS && value.phase().isolationActive());
+            if (session.isPresent()) {
+                try {
+                    var claim = ledger.findEntity(firework.getUniqueId()).orElseThrow();
+                    if (claim.type() != ArenaWorldLedger.EntityType.ELYTRA_FIREWORK
+                            || !claim.sessionId().equals(session.orElseThrow().sessionId())
+                            || claim.status() != ArenaWorldLedger.EntityStatus.PENDING)
+                        event.setCancelled(true);
+                } catch (RuntimeException unownedLaunch) { event.setCancelled(true); }
+                return;
+            }
+        }
         if (!(event.getEntity().getShooter() instanceof Player player)) return;
-        var found = sessions.findByPlayer(player.getUniqueId()).filter(session -> session.game() == GameKey.ARENA
+        var found = sessions.findByPlayer(player.getUniqueId()).filter(session ->
+                (session.game() == GameKey.ARENA || session.game() == GameKey.ARCHERY_RANGE)
                 && session.phase().isolationActive());
         if (found.isEmpty() || event.isCancelled()) return;
         PlayerSession session = found.orElseThrow();
@@ -75,7 +164,8 @@ public final class ArenaProjectileLifecycleListener implements Listener, AutoClo
                     || !connections.isCurrent(player, auth.connectionId()) || !connection.id().equals(auth.connectionId())
                     || !lease.capture().capturedConnectionId().equals(auth.connectionId())
                     || !lease.capture().matchId().equals(session.matchId()) || !lease.capture().playerId().equals(player.getUniqueId())
-                    || region.game() != GameKey.ARENA || region.role() != ProtectedRegionRole.PARTICIPANT_ONLY
+                    || lease.capture().game() != session.game()
+                    || region.game() != session.game() || region.role() != ProtectedRegionRole.PARTICIPANT_ONLY
                     || !admissions.permits(player.getUniqueId(), session.sessionId(), region.id(), clock.instant())
                     || !(event.getEntity() instanceof AbstractArrow arrow)
                     || (!(arrow instanceof Arrow) && !(arrow instanceof SpectralArrow)))
@@ -127,14 +217,21 @@ public final class ArenaProjectileLifecycleListener implements Listener, AutoClo
         Entity entity = event.getEntity();
         if (!trackedType(entity)) return;
         try {
-            if (ledger.findEntity(entity.getUniqueId()).isPresent() || ownership.hasLabel(entity))
+            if (ledger.findEntity(entity.getUniqueId()).isPresent() || ownership.hasLabel(entity)
+                    || (anvilHazards != null && anvilHazards.hasLabel(entity))
+                    || (elytraFireworks != null && elytraFireworks.hasLabel(entity)))
                 schedule(() -> reconcile(entity, false));
-        } catch (RuntimeException failure) { failOwner(entity); }
+        } catch (RuntimeException failure) {
+            reportFailure("NATIVE_ENTITY_REMOVED", failure);
+            failOwner(entity);
+        }
     }
 
     @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = false)
     public void hit(ProjectileHitEvent event) {
         if (closed) return;
+        // Non-explosive boosts retain their native flight/removal lifecycle.
+        if (event.getEntity() instanceof org.bukkit.entity.Firework) return;
         if (!trackedType(event.getEntity())) return;
         try {
             if (ledger.findEntity(event.getEntity().getUniqueId()).isEmpty()) {
@@ -169,8 +266,24 @@ public final class ArenaProjectileLifecycleListener implements Listener, AutoClo
 
     private void reconcile(Entity entity, boolean added) {
         try {
-            if (added) ownership.afterAdd(entity); else ownership.afterUntracking(entity);
-        } catch (RuntimeException failure) { failOwner(entity); }
+            if (elytraFireworks != null && (entity instanceof org.bukkit.entity.Firework || elytraFireworks.hasLabel(entity))) {
+                if (added) {
+                    elytraFireworks.afterAdd(entity);
+                    if (ledger.findEntity(entity.getUniqueId()).isPresent()) {
+                        var controller = elytraController.get();
+                        if (controller == null) throw new IllegalStateException("Elytra native insertion has no active controller");
+                        controller.rocketInserted(entity.getUniqueId());
+                    }
+                } else elytraFireworks.afterUntracking(entity);
+            } else if (anvilHazards != null && (entity instanceof org.bukkit.entity.ArmorStand || anvilHazards.hasLabel(entity))) {
+                if (added) anvilHazards.afterAdd(entity); else anvilHazards.afterUntracking(entity);
+            } else {
+                if (added) ownership.afterAdd(entity); else ownership.afterUntracking(entity);
+            }
+        } catch (RuntimeException failure) {
+            reportFailure(added ? "NATIVE_ENTITY_ADDED" : "NATIVE_ENTITY_REMOVED", failure);
+            failOwner(entity);
+        }
     }
 
     private void failOwner(Entity entity) {
@@ -187,11 +300,13 @@ public final class ArenaProjectileLifecycleListener implements Listener, AutoClo
 
     private void closeProvider() {
         worldState.lifecycleFailed();
-        owner.getLogger().severe("A propriedade de um projétil da Arena requer revisão; o restauro permanece protegido.");
+        owner.getLogger().severe("A propriedade de uma entidade temporária requer revisão; o restauro permanece protegido.");
     }
 
     private boolean trackedType(Entity entity) {
-        return entity instanceof AbstractArrow || ownership.hasLabel(entity);
+        return entity instanceof AbstractArrow || ownership.hasLabel(entity)
+                || (anvilHazards != null && (entity instanceof org.bukkit.entity.ArmorStand || anvilHazards.hasLabel(entity)))
+                || (elytraFireworks != null && (entity instanceof org.bukkit.entity.Firework || elytraFireworks.hasLabel(entity)));
     }
 
     private void schedule(Runnable action) {
@@ -212,5 +327,19 @@ public final class ArenaProjectileLifecycleListener implements Listener, AutoClo
     private void fail(Player player, PlayerSession session) {
         if (sessions.findById(session.sessionId()).orElse(null) == session && session.phase().isolationActive())
             violations.onViolation(player, session, SessionViolation.WORLD_ISOLATION_FAILURE);
+    }
+
+    /** Diagnose native lifecycle failures without printing throwable messages or player data. */
+    private void reportFailure(String code, RuntimeException failure) {
+        StringBuilder detail = new StringBuilder("Falha de entidade temporária [")
+                .append(code).append("]; tipo=").append(failure.getClass().getName());
+        for (StackTraceElement frame : failure.getStackTrace()) {
+            if (frame.getClassName().startsWith("com.ciaac.")) {
+                detail.append("; origem=").append(frame.getClassName()).append('.')
+                        .append(frame.getMethodName()).append(':').append(frame.getLineNumber());
+                break;
+            }
+        }
+        owner.getLogger().warning(detail.toString());
     }
 }

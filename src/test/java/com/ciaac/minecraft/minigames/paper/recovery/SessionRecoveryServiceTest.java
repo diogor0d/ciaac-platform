@@ -324,7 +324,7 @@ class SessionRecoveryServiceTest {
     private static Player player(UUID playerId) {
         return proxy(Player.class, (method, args) -> switch (method.getName()) {
             case "getUniqueId" -> playerId;
-            case "isOnline" -> true;
+            case "isOnline", "isValid" -> true;
             default -> null;
         });
     }

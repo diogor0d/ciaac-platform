@@ -11,6 +11,8 @@ import java.util.Optional;
 import org.bukkit.command.Command;
 import org.bukkit.command.CommandExecutor;
 import org.bukkit.command.CommandSender;
+import org.bukkit.command.ConsoleCommandSender;
+import org.bukkit.command.RemoteConsoleCommandSender;
 import org.bukkit.entity.Player;
 
 /** Comando limitado da plataforma; nunca invoca o recarregamento global do Paper. */
@@ -18,20 +20,35 @@ public final class CiaacPlatformCommand implements CommandExecutor, org.bukkit.c
     private static final String TEST_PERMISSION = "ciaac.minecarts.test";
     private final MinecartSpeedControl minecarts;
     private final MinecartSpeedAuditSink audit;
+    private final FacilitySetupCommands facilities;
 
     public CiaacPlatformCommand(MinecartSpeedControl minecarts, MinecartSpeedAuditSink audit) {
+        this(minecarts, audit, null);
+    }
+
+    public CiaacPlatformCommand(MinecartSpeedControl minecarts, MinecartSpeedAuditSink audit, FacilitySetupCommands facilities) {
         this.minecarts = Objects.requireNonNull(minecarts, "minecarts");
         this.audit = Objects.requireNonNull(audit, "audit");
+        this.facilities = facilities;
     }
 
     @Override
     public boolean onCommand(CommandSender sender, Command command, String label, String[] args) {
         if (args.length == 0) {
             sender.sendMessage("§bCIAACPlatform§7 — usa /" + label + " carrinhos <ação>.");
+            if (facilities != null && isLocalConsole(sender)) {
+                sender.sendMessage("§7Preparação de instalações (consola local): /" + label
+                        + " instalações <mundo <nome-exato>|validar|capturar-cores|capturar-construcao>.");
+            }
             return true;
         }
+        if ("instalações".equalsIgnoreCase(args[0]) && facilities != null) return facilities.execute(sender, args);
         if (!"carrinhos".equals(args[0].toLowerCase(Locale.ROOT))) {
             sender.sendMessage("§cMódulo desconhecido. Usa /" + label + " carrinhos.");
+            if (facilities != null && isLocalConsole(sender)) {
+                sender.sendMessage("§7Preparação de instalações (consola local): /" + label
+                        + " instalações <mundo <nome-exato>|validar|capturar-cores|capturar-construcao>.");
+            }
             return true;
         }
         if (args.length < 2 || "estado".equalsIgnoreCase(args[1])) return status(sender);
@@ -154,15 +171,36 @@ public final class CiaacPlatformCommand implements CommandExecutor, org.bukkit.c
         return false;
     }
 
-    private static boolean usage(CommandSender sender, String label) {
+    private boolean usage(CommandSender sender, String label) {
         sender.sendMessage("§cUso: /" + label
                 + " carrinhos <estado|recarregar|definir|predefinir|repor|repor-tudo>.");
+        if (facilities != null && isLocalConsole(sender)) {
+            sender.sendMessage("§7Preparação de instalações (consola local): /" + label
+                    + " instalações <mundo <nome-exato>|validar|capturar-cores|capturar-construcao>.");
+        }
         return true;
+    }
+
+    private static boolean isLocalConsole(CommandSender sender) {
+        return sender instanceof ConsoleCommandSender && !(sender instanceof RemoteConsoleCommandSender);
     }
 
     @Override
     public List<String> onTabComplete(CommandSender sender, Command command, String alias, String[] args) {
-        if (args.length == 1) return prefix(List.of("carrinhos"), args[0]);
+        if (args.length == 1) {
+            ArrayList<String> options = new ArrayList<>(List.of("carrinhos"));
+            if (facilities != null && isLocalConsole(sender)) options.add("instalações");
+            return prefix(options, args[0]);
+        }
+        if (facilities != null && isLocalConsole(sender)
+                && args.length == 2 && "instalações".equalsIgnoreCase(args[0])) {
+            return prefix(List.of("mundo", "validar", "capturar-cores", "capturar-construcao"), args[1]);
+        }
+        if (facilities != null && isLocalConsole(sender)
+                && args.length == 3 && "instalações".equalsIgnoreCase(args[0])
+                && "mundo".equalsIgnoreCase(args[1])) {
+            return prefix(minecarts.loadedWorldNames(), args[2]);
+        }
         if (args.length == 2 && "carrinhos".equalsIgnoreCase(args[0])) {
             ArrayList<String> options = new ArrayList<>();
             if (sender.hasPermission("ciaac.minecarts.view")) options.add("estado");

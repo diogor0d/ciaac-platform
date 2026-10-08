@@ -92,9 +92,9 @@ public final class BuildBattleModule implements MinigameModule {
 
     @Override public synchronized ModuleActionResult leave(Player player) {
         try {
-            controller.leave(Objects.requireNonNull(player, "player").getUniqueId());
+            var result = controller.leave(Objects.requireNonNull(player, "player").getUniqueId());
             clearIfIdle();
-            return ModuleActionResult.accepted("LEFT", "Saíste do Build Battle.");
+            return ModuleResults.admission(result);
         } catch (RuntimeException ignored) {
             return ModuleResults.failure();
         }

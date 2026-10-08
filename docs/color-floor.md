@@ -1,11 +1,19 @@
 # Piso das Cores
 
-Estado em 2026-08-24:
+Última atualização: 2026-10-08.
 
 - `SOURCE-VERIFIED`: domínio, controlador, resolução do modelo e fronteira
   de sessão estão presentes.
-- `UNVERIFIED`: não foi feita validação Paper nem restauração de
-  blocos num servidor descartável.
+- `RUNTIME-VERIFIED`, com âmbito limitado, no candidato
+  `6792e1924d90214e3a7c26919eb3cd0d0aaa83c16db0de38157f533129c1dc05`:
+  conclusão, saída, desconexão e crash frio foram exercitados em Paper
+  descartável com AuthMe e peers sintéticos autenticados. Os 18 campos Paper
+  foram restaurados exatamente e a leitura nativa confirmou as 4096 células
+  do template após o crash. No ensaio de crash, 3712 células tinham sido
+  alteradas para `AIR` antes de `save-all`; a comparação após reinício confirmou
+  o template sem reparação feita pelo próprio teste.
+- `UNVERIFIED`: cenários locais restantes, instalações reais e prontidão
+  operacional. Ver a [matriz datada](all-minigames-validation.md).
 
 ## Experiência e comandos
 
@@ -69,6 +77,6 @@ preset público é `survival_ms`, MAX; valores maiores são melhores.
 
 ## Limites de execução
 
-A entrega de displays/hologramas, DiscordSRV, listeners Paper e uma restauração
-de blocos em execução continuam `UNVERIFIED`. A classificação e o
-estado do jogo não dependem de displays externos.
+A entrega de displays/hologramas e DiscordSRV continua `UNVERIFIED`; a
+restauração nativa de blocos foi validada apenas para os cenários delimitados
+acima. A classificação e o estado do jogo não dependem de displays externos.

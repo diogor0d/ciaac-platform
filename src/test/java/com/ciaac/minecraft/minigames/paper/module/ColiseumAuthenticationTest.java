@@ -65,6 +65,7 @@ final class ColiseumAuthenticationTest {
     @Test
     void validAuthenticationAllowsNormalChallengeAndReservation() {
         Fixture f = new Fixture();
+        System.gc();
         f.authenticate(f.challenger);
         f.authenticate(f.target);
         assertEquals("CHALLENGE_CREATED", f.challenge().code());
@@ -119,6 +120,8 @@ final class ColiseumAuthenticationTest {
     }
 
     private static final class Fixture {
+        // Bukkit Location keeps only a weak reference; the server fixture must own its loaded world.
+        private final World world;
         private final Map<UUID, Player> players = new LinkedHashMap<>();
         private final Map<String, Player> names = new LinkedHashMap<>();
         private final AuthenticationRegistry authentication = new AuthenticationRegistry();
@@ -138,7 +141,7 @@ final class ColiseumAuthenticationTest {
 
         private Fixture() {
             UUID worldId = UUID.randomUUID();
-            World world = proxy(World.class, (method, args) -> {
+            world = proxy(World.class, (method, args) -> {
                 if (method.equals("getUID")) return worldId;
                 throw new AssertionError("Unexpected world method: " + method);
             });

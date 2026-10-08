@@ -10,6 +10,7 @@ import com.ciaac.minecraft.minigames.command.MinigamesCommand;
 import com.ciaac.minecraft.minigames.configuration.RuntimeConfiguration;
 import com.ciaac.minecraft.minigames.configuration.RuntimeConfigurationLoader;
 import com.ciaac.minecraft.minigames.core.GameKey;
+import com.ciaac.minecraft.minigames.buildbattle.BuildBattlePhase;
 import com.ciaac.minecraft.minigames.display.DisplayConfigLoadResult;
 import com.ciaac.minecraft.minigames.display.NativeDisplayConfigLoader;
 import com.ciaac.minecraft.minigames.isolation.IsolationPolicy;
@@ -30,6 +31,20 @@ import com.ciaac.minecraft.minigames.paper.isolation.BuiltinExternalStateAdapter
 import com.ciaac.minecraft.minigames.paper.isolation.ArenaProjectileLifecycleListener;
 import com.ciaac.minecraft.minigames.paper.isolation.ArenaProjectileOwnership;
 import com.ciaac.minecraft.minigames.paper.isolation.ArenaWorldStatePort;
+import com.ciaac.minecraft.minigames.paper.isolation.ColorFloorWorldManifest;
+import com.ciaac.minecraft.minigames.paper.isolation.ColorFloorWorldState;
+import com.ciaac.minecraft.minigames.paper.isolation.AnvilWorldState;
+import com.ciaac.minecraft.minigames.paper.isolation.AnvilHazardOwnership;
+import com.ciaac.minecraft.minigames.paper.isolation.ElytraWorldState;
+import com.ciaac.minecraft.minigames.paper.isolation.ElytraFireworkOwnership;
+import com.ciaac.minecraft.minigames.paper.configuration.ResolvedElytraRingsConfiguration;
+import com.ciaac.minecraft.minigames.paper.module.ElytraRingsModule;
+import com.ciaac.minecraft.minigames.paper.isolation.BuildBattleWorldState;
+import com.ciaac.minecraft.minigames.paper.configuration.ResolvedBuildBattleConfiguration;
+import com.ciaac.minecraft.minigames.paper.buildbattle.BuildBattleResetPort;
+import com.ciaac.minecraft.minigames.paper.configuration.PaperConfigurationResolver;
+import com.ciaac.minecraft.minigames.paper.configuration.ResolvedColorFloorConfiguration;
+import com.ciaac.minecraft.minigames.paper.configuration.ResolvedAnvilDodgeConfiguration;
 import com.ciaac.minecraft.minigames.paper.isolation.ExternalStateFacetHandler;
 import com.ciaac.minecraft.minigames.paper.isolation.ExternalStateFacetPort;
 import com.ciaac.minecraft.minigames.paper.isolation.FacetSnapshotHandler;
@@ -40,10 +55,12 @@ import com.ciaac.minecraft.minigames.paper.isolation.ScoreboardCooldownFacetHand
 import com.ciaac.minecraft.minigames.paper.isolation.VanillaProgressFacetHandler;
 import com.ciaac.minecraft.minigames.paper.isolation.VitalsFacetHandler;
 import com.ciaac.minecraft.minigames.paper.module.ColiseumModule;
+import com.ciaac.minecraft.minigames.paper.module.BuildBattleModule;
 import com.ciaac.minecraft.minigames.paper.recovery.SessionRecoveryService;
 import com.ciaac.minecraft.minigames.persistence.AuditRepository;
 import com.ciaac.minecraft.minigames.persistence.ExternalOperationJournal;
 import com.ciaac.minecraft.minigames.persistence.ArenaWorldLedger;
+import com.ciaac.minecraft.minigames.persistence.ColorFloorWorldLedger;
 import com.ciaac.minecraft.minigames.persistence.SessionRepository;
 import com.ciaac.minecraft.minigames.persistence.SqliteAnnouncementRepository;
 import com.ciaac.minecraft.minigames.persistence.SqliteAuditRepository;
@@ -66,6 +83,8 @@ import com.ciaac.minecraft.minigames.runtime.CombatPolicyRegistry;
 import com.ciaac.minecraft.minigames.runtime.ConnectionRegistry;
 import com.ciaac.minecraft.minigames.runtime.SessionCoordinator;
 import com.ciaac.minecraft.minigames.runtime.SessionRegistry;
+import com.ciaac.minecraft.minigames.runtime.PlayerSession;
+import com.ciaac.minecraft.minigames.runtime.SessionPhase;
 import com.ciaac.minecraft.minigames.statistics.StatisticsRepository;
 import java.time.Clock;
 import java.time.Duration;
@@ -80,6 +99,8 @@ import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Function;
+import org.bukkit.GameMode;
 import org.bukkit.OfflinePlayer;
 import org.bukkit.command.PluginCommand;
 import org.bukkit.configuration.ConfigurationSection;
@@ -87,6 +108,7 @@ import org.bukkit.entity.Player;
 import net.kyori.adventure.text.Component;
 import org.bukkit.plugin.RegisteredServiceProvider;
 import org.bukkit.scheduler.BukkitTask;
+import pt.ciaac.minigames.paper.template.TemplateArtifactRepository;
 
 /** Owns all shared runtime resources and keeps construction failure fail-closed. */
 public final class MinigamePlatformRuntime implements AutoCloseable {
@@ -97,6 +119,7 @@ public final class MinigamePlatformRuntime implements AutoCloseable {
     private final SqliteDatabase database;
     private final ExternalOperationJournal externalJournal;
     private final ArenaWorldLedger arenaWorldLedger;
+    private final ColorFloorWorldLedger colorFloorWorldLedger;
     private final ArenaProjectileLifecycleListener arenaProjectiles;
     private final MinigameModuleRegistry modules;
     private final NativeDisplayController displays;
@@ -104,6 +127,7 @@ public final class MinigamePlatformRuntime implements AutoCloseable {
     private final PassportPaperRuntime passport;
     private final AuthenticationRegistry authentication;
     private final ConnectionRegistry connections;
+    private final SessionRegistry sessions;
     private final Clock clock;
     private long ticks;
 
@@ -112,6 +136,7 @@ public final class MinigamePlatformRuntime implements AutoCloseable {
             SqliteDatabase database,
             ExternalOperationJournal externalJournal,
             ArenaWorldLedger arenaWorldLedger,
+            ColorFloorWorldLedger colorFloorWorldLedger,
             ArenaProjectileLifecycleListener arenaProjectiles,
             MinigameModuleRegistry modules,
             NativeDisplayController displays,
@@ -119,11 +144,13 @@ public final class MinigamePlatformRuntime implements AutoCloseable {
             PassportPaperRuntime passport,
             AuthenticationRegistry authentication,
             ConnectionRegistry connections,
+            SessionRegistry sessions,
             Clock clock) {
         this.plugin = plugin;
         this.database = database;
         this.externalJournal = externalJournal;
         this.arenaWorldLedger = arenaWorldLedger;
+        this.colorFloorWorldLedger = colorFloorWorldLedger;
         this.arenaProjectiles = arenaProjectiles;
         this.modules = modules;
         this.displays = displays;
@@ -131,6 +158,7 @@ public final class MinigamePlatformRuntime implements AutoCloseable {
         this.passport = passport;
         this.authentication = authentication;
         this.connections = connections;
+        this.sessions = sessions;
         this.clock = clock;
     }
 
@@ -148,6 +176,7 @@ public final class MinigamePlatformRuntime implements AutoCloseable {
         PassportPaperRuntime passportRuntime = null;
         ExternalOperationJournal externalJournal = null;
         ArenaWorldLedger arenaWorldLedger = null;
+        ColorFloorWorldLedger colorFloorWorldLedger = null;
         ArenaProjectileLifecycleListener arenaProjectiles = null;
         try {
         SnapshotEnvelopeCodec snapshotCodec = new SnapshotEnvelopeCodec();
@@ -190,12 +219,69 @@ public final class MinigamePlatformRuntime implements AutoCloseable {
         }
         ArenaWorldStatePort arenaWorld = null;
         ArenaProjectileOwnership ownedProjectiles = null;
+        AnvilHazardOwnership ownedHazards = null;
+        ElytraFireworkOwnership ownedFireworks = null;
+        BuildBattleResetPort buildBattleReset = null;
         if (!claimed.contains(PlayerStateFacet.TEMPORARY_WORLD_BLOCKS_AND_ENTITIES)) {
             if (ArenaWorldStatePort.nativeBuildMatches()) {
                 arenaWorldLedger = new ArenaWorldLedger(plugin.getDataFolder().toPath().resolve("arena-world"));
                 ownedProjectiles = new ArenaProjectileOwnership(plugin, arenaWorldLedger);
+                ownedHazards = new AnvilHazardOwnership(plugin, arenaWorldLedger);
                 arenaWorld = new ArenaWorldStatePort(plugin.getServer(), regions, arenaWorldLedger,
                         ownedProjectiles, externalJournal, audit);
+                colorFloorWorldLedger = new ColorFloorWorldLedger(plugin.getDataFolder().toPath().resolve("color-floor-world"));
+                var colorConfiguration = new PaperConfigurationResolver().resolve(configuration, plugin.getServer())
+                        .module(GameKey.COLOR_FLOOR).orElseThrow().gameConfiguration()
+                        .filter(ResolvedColorFloorConfiguration.class::isInstance)
+                        .map(ResolvedColorFloorConfiguration.class::cast);
+                var templates = new TemplateArtifactRepository(plugin.getDataFolder().toPath().resolve("templates"));
+                arenaWorld.colorFloor(new ColorFloorWorldState(arenaWorld.id(), plugin.getServer(), regions,
+                        colorFloorWorldLedger, externalJournal, audit, () -> {
+                            var value = colorConfiguration.orElseThrow(
+                                    () -> new IllegalStateException("Color Floor configuration is unavailable"));
+                            var floor = Objects.requireNonNull(value.regions().get("floor"), "floor");
+                            var artifact = templates.load(value.floorTemplate().identifier(), value.world(), floor,
+                                    value.rulesetRevision()).orElseThrow(
+                                            () -> new IllegalStateException("Color Floor template is unavailable"));
+                            var boundary = regions.find("color-floor.boundary").orElseThrow();
+                            return new ColorFloorWorldManifest(plugin.getServer().getVersion(), boundary, artifact);
+                        }));
+                var anvilConfiguration = new PaperConfigurationResolver().resolve(configuration, plugin.getServer())
+                        .module(GameKey.ANVIL_DODGE).orElseThrow().gameConfiguration()
+                        .filter(ResolvedAnvilDodgeConfiguration.class::isInstance)
+                        .map(ResolvedAnvilDodgeConfiguration.class::cast);
+                arenaWorld.anvil(new AnvilWorldState(arenaWorld.id(), plugin.getServer(), regions,
+                        arenaWorldLedger, ownedHazards, externalJournal, audit,
+                        () -> anvilConfiguration.orElseThrow(
+                                () -> new IllegalStateException("Anvil configuration is unavailable"))));
+                ownedFireworks = new ElytraFireworkOwnership(plugin, arenaWorldLedger);
+                var fireworkOwnership = ownedFireworks;
+                var elytraConfiguration = new PaperConfigurationResolver().resolve(configuration, plugin.getServer())
+                        .module(GameKey.ELYTRA_RINGS).orElseThrow().gameConfiguration()
+                        .filter(ResolvedElytraRingsConfiguration.class::isInstance)
+                        .map(ResolvedElytraRingsConfiguration.class::cast);
+                arenaWorld.elytra(new ElytraWorldState(arenaWorld.id(), plugin.getServer(), regions,
+                        arenaWorldLedger, externalJournal, audit,
+                        () -> elytraConfiguration.orElseThrow(
+                                () -> new IllegalStateException("Elytra configuration is unavailable")),
+                        new ElytraWorldState.EntityCleanup() {
+                            @Override public void validate(com.ciaac.minecraft.minigames.isolation.PlayerStateOperation capture) {
+                                fireworkOwnership.validatePurge(capture);
+                            }
+                            @Override public void purge(com.ciaac.minecraft.minigames.isolation.PlayerStateOperation capture) {
+                                fireworkOwnership.purge(capture);
+                            }
+                        }));
+                var buildConfiguration = new PaperConfigurationResolver().resolve(configuration, plugin.getServer())
+                        .module(GameKey.BUILD_BATTLE).orElseThrow().gameConfiguration()
+                        .filter(ResolvedBuildBattleConfiguration.class::isInstance)
+                        .map(ResolvedBuildBattleConfiguration.class::cast);
+                var buildWorld = new BuildBattleWorldState(arenaWorld.id(), plugin.getServer(), regions,
+                        arenaWorldLedger, externalJournal, audit,
+                        () -> buildConfiguration.orElseThrow(
+                                () -> new IllegalStateException("Build Battle configuration is unavailable")), templates);
+                arenaWorld.buildBattle(buildWorld);
+                buildBattleReset = buildWorld.resetPort();
                 handlers.add(new ExternalStateFacetHandler(arenaWorld));
                 claimed.addAll(arenaWorld.facets());
             } else plugin.getLogger().warning(
@@ -231,7 +317,8 @@ public final class MinigamePlatformRuntime implements AutoCloseable {
                 plugin, configuration, clock, database, authentication, connections,
                 new AdmissionRequestFactory(connections, authentication, clock), sessions, coordinator, regions,
                 regionAdmissions, combatPolicies, temporaryItems, statistics, audit,
-                announcementDispatcher, isolation, facetsByGame);
+                announcementDispatcher, isolation, facetsByGame, Optional.ofNullable(ownedHazards),
+                Optional.ofNullable(buildBattleReset));
 
         AtomicReference<MinigameModuleRegistry> moduleReference = new AtomicReference<>(
                 MinigameModuleRegistry.allUnavailable("A plataforma ainda está a iniciar."));
@@ -248,10 +335,26 @@ public final class MinigamePlatformRuntime implements AutoCloseable {
                 });
         recovery.loadBlockingSessions();
         registerCoreListeners(plugin, authentication, connections, sessions, combatPolicies,
-                temporaryItems, regions, regionAdmissions, recovery, clock);
+                temporaryItems, regions, regionAdmissions, recovery, clock, session -> {
+                    if (session.phase() == SessionPhase.PREPARING || session.game() != GameKey.BUILD_BATTLE) {
+                        return GameMode.ADVENTURE;
+                    }
+                    var module = moduleReference.get().get(GameKey.BUILD_BATTLE);
+                    if (!(module instanceof BuildBattleModule building)) {
+                        throw new IllegalStateException("Build Battle mode policy is unavailable");
+                    }
+                    BuildBattlePhase phase = building.controller().phaseForMatch(session.matchId())
+                            .orElseThrow(() -> new IllegalStateException("Build Battle match is unavailable"));
+                    return phase == BuildBattlePhase.BUILDING ? GameMode.CREATIVE : GameMode.ADVENTURE;
+                });
         if (arenaWorld != null) {
             arenaProjectiles = new ArenaProjectileLifecycleListener(plugin, arenaWorldLedger, ownedProjectiles,
                     arenaWorld, sessions, authentication, connections, regions, regionAdmissions, recovery, clock);
+            arenaProjectiles.anvilHazards(ownedHazards);
+            arenaProjectiles.elytraFireworks(ownedFireworks, () -> {
+                var module = moduleReference.get().get(GameKey.ELYTRA_RINGS);
+                return module instanceof ElytraRingsModule elytra ? elytra.controller() : null;
+            });
             plugin.getServer().getPluginManager().registerEvents(arenaProjectiles, plugin);
             arenaWorld.lifecycleReady();
         }
@@ -343,14 +446,21 @@ public final class MinigamePlatformRuntime implements AutoCloseable {
                 }
             }
             if (value.ticks % 20 == 0) {
+                for (Player player : plugin.getServer().getOnlinePlayers()) {
+                    try { recovery.retryPendingWorldRecovery(player); }
+                    catch (RuntimeException failure) {
+                        plugin.getLogger().warning("A repetição de recuperação continua fechada: "
+                                + failure.getClass().getSimpleName());
+                    }
+                }
                 monitor.tick();
                 readyDisplays.tick();
             }
         }, 1L, 1L), "heartbeat task");
         registerCommands(plugin, readyModules, statistics, clock);
         MinigamePlatformRuntime result = new MinigamePlatformRuntime(
-                plugin, database, externalJournal, arenaWorldLedger, arenaProjectiles, readyModules, displays, heartbeat, passportRuntime,
-                authentication, connections, clock);
+                plugin, database, externalJournal, arenaWorldLedger, colorFloorWorldLedger, arenaProjectiles, readyModules, displays, heartbeat, passportRuntime,
+                authentication, connections, sessions, clock);
         runtime.set(result);
         logIsolationReadiness(plugin, stateGateway);
         return result;
@@ -360,12 +470,13 @@ public final class MinigamePlatformRuntime implements AutoCloseable {
                 catch (RuntimeException closeFailure) { failure.addSuppressed(closeFailure); }
             }
             cleanupFailedStart(plugin, assembledModules, displays, heartbeat, database, externalJournal,
-                    arenaWorldLedger, arenaProjectiles, failure);
+                    arenaWorldLedger, colorFloorWorldLedger, arenaProjectiles, failure);
             throw failure;
         }
     }
 
     public MinigameModuleRegistry modules() { return modules; }
+    public boolean hasBlockingSessions() { return !sessions.all().isEmpty(); }
 
     public Optional<SecurityEvent.Actor> authenticatedActor(Player player) {
         Objects.requireNonNull(player, "player");
@@ -418,6 +529,13 @@ public final class MinigamePlatformRuntime implements AutoCloseable {
                 else firstFailure.addSuppressed(failure);
             }
         }
+        if (colorFloorWorldLedger != null) {
+            try { colorFloorWorldLedger.close(); }
+            catch (RuntimeException failure) {
+                if (firstFailure == null) firstFailure = failure;
+                else firstFailure.addSuppressed(failure);
+            }
+        }
         try {
             externalJournal.close();
         } catch (RuntimeException failure) {
@@ -441,6 +559,7 @@ public final class MinigamePlatformRuntime implements AutoCloseable {
             SqliteDatabase database,
             ExternalOperationJournal externalJournal,
             ArenaWorldLedger arenaWorldLedger,
+            ColorFloorWorldLedger colorFloorWorldLedger,
             ArenaProjectileLifecycleListener arenaProjectiles,
             Throwable original) {
         if (heartbeat != null) {
@@ -469,6 +588,10 @@ public final class MinigamePlatformRuntime implements AutoCloseable {
         }
         if (arenaWorldLedger != null) {
             try { arenaWorldLedger.close(); }
+            catch (RuntimeException closeFailure) { original.addSuppressed(closeFailure); }
+        }
+        if (colorFloorWorldLedger != null) {
+            try { colorFloorWorldLedger.close(); }
             catch (RuntimeException closeFailure) { original.addSuppressed(closeFailure); }
         }
         if (externalJournal != null) {
@@ -518,11 +641,13 @@ public final class MinigamePlatformRuntime implements AutoCloseable {
             ProtectedRegionRegistry regions,
             RegionAdmissionRegistry regionAdmissions,
             SessionRecoveryService recovery,
-            Clock clock) {
+            Clock clock,
+            Function<PlayerSession, GameMode> expectedTemporaryMode) {
         var manager = plugin.getServer().getPluginManager();
         manager.registerEvents(new ConnectionLifecycleListener(connections, authentication, clock), plugin);
         manager.registerEvents(new SessionIsolationListener(
-                plugin, sessions, authentication, combatPolicies, temporaryItems, recovery), plugin);
+                plugin, sessions, authentication, combatPolicies, temporaryItems, recovery,
+                expectedTemporaryMode), plugin);
         manager.registerEvents(new ProgressSuppressionListener(sessions), plugin);
         manager.registerEvents(new RegionProtectionListener(
                 regions, regionAdmissions, sessions, recovery, clock), plugin);
