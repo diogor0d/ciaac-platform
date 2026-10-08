@@ -370,14 +370,15 @@ public final class SessionIsolationListener implements Listener {
         command = resolved.getName().toLowerCase(Locale.ROOT) + (space < 0 ? "" : command.substring(space));
         if (command.equals("minijogos") || command.equals("minigames")
                 || command.equals("minijogos estado") || command.equals("minigames estado")
-                || command.equals("minijogos ajuda") || command.equals("minigames ajuda")) {
+                || command.equals("minijogos ajuda") || command.equals("minigames ajuda")
+                || command.equals("minijogos menu")) {
             return true;
         }
         if (command.matches("(buildbattle|bb) (ver)( seguinte)?")
                 || command.matches("(buildbattle|bb) (avaliar|votar|vote) [a-z0-9][a-z0-9_.-]{0,31} [0-9]{1,3}")) {
             return true;
         }
-        return command.matches("(coliseu|arena|buildbattle|bb|batataquente|hotpotato|sumo|parkour|arco|bigornas|cores|elytra) (estado|ajuda|sair)");
+        return command.matches("(coliseu|arena|buildbattle|bb|batataquente|hotpotato|sumo|parkour|arco|bigornas|cores|elytra)( (estado|ajuda|menu|sair))?");
     }
 
     /** Recovery cannot finish unless the actual provider can process normal login. */

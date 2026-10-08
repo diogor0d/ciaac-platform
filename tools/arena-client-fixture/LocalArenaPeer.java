@@ -22,8 +22,13 @@ import org.geysermc.mcprotocollib.protocol.data.game.entity.player.PlayerAction;
 import org.geysermc.mcprotocollib.protocol.data.game.entity.object.Direction;
 import org.geysermc.mcprotocollib.protocol.data.game.entity.type.EntityType;
 import org.geysermc.mcprotocollib.protocol.data.game.entity.player.GameMode;
+import org.geysermc.mcprotocollib.protocol.data.game.inventory.ContainerActionType;
+import org.geysermc.mcprotocollib.protocol.data.game.inventory.DropItemAction;
+import org.geysermc.mcprotocollib.protocol.data.game.item.ItemStack;
+import org.geysermc.mcprotocollib.protocol.data.game.item.component.DataComponentTypes;
 import org.geysermc.mcprotocollib.protocol.data.game.level.notify.GameEvent;
 import org.geysermc.mcprotocollib.protocol.packet.ingame.clientbound.*;
+import org.geysermc.mcprotocollib.protocol.packet.ingame.clientbound.inventory.*;
 import org.geysermc.mcprotocollib.protocol.packet.ingame.clientbound.entity.player.*;
 import org.geysermc.mcprotocollib.protocol.packet.ingame.clientbound.entity.*;
 import org.geysermc.mcprotocollib.protocol.packet.ingame.clientbound.title.*;
@@ -67,6 +72,8 @@ public final class LocalArenaPeer {
  private static volatile String nativeWorldName="";
  private static volatile boolean nativeCreativeAbility;
  private static volatile int selectedHotbarSlot=-1;
+ private static volatile NativeMenu nativeMenu;
+ private record NativeMenu(int containerId,int stateId,String type,String title,List<ItemStack> items) {}
  private static String carrierTitle="OTHER";
  private static int carrierPeerIndex;
  private static final Map<Integer,FixtureEntity> fixtureEntities=new HashMap<>();
@@ -115,6 +122,17 @@ public final class LocalArenaPeer {
      nativeCreativeAbility=abilities.isCreative();
     } else if(packet instanceof ClientboundSetHeldSlotPacket selected){
      selectedHotbarSlot=selected.getSlot()>=0&&selected.getSlot()<=8?selected.getSlot():-1;
+    } else if(packet instanceof ClientboundOpenScreenPacket opened){
+     String title=plain(opened.getTitle());
+     nativeMenu=opened.getContainerId()>0&&isAllowedNativeMenuTitle(title)?new NativeMenu(opened.getContainerId(),-1,
+       opened.getType().name(),title,List.of()):null;
+     if(nativeMenu!=null)System.out.println("Native menu opened; title="+safeMenuTitle(title)+" containerId="+opened.getContainerId());
+    } else if(packet instanceof ClientboundContainerSetContentPacket content){
+     observeNativeMenuContent(content.getContainerId(),content.getStateId(),content.getItems());
+    } else if(packet instanceof ClientboundContainerSetSlotPacket changed){
+     observeNativeMenuSlot(changed.getContainerId(),changed.getStateId(),changed.getSlot(),changed.getItem());
+    } else if(packet instanceof ClientboundContainerClosePacket closed){
+     observeNativeMenuClose(closed.getContainerId());
     } else if(packet instanceof ClientboundShowDialogConfigurationPacket dialog){
      pendingRegisterConfirmation=false;
      pendingAuthDialog=classifyAuthDialog(dialog.getDialog());
@@ -192,6 +210,7 @@ public final class LocalArenaPeer {
    try{releaseDrawnBow(client);}catch(RuntimeException ignored){}
     synchronized(poseLock){bowDrawn=false;walkInputActive=false;walkTicksRemaining=0;joined=false;positionKnown=false;}
     nativeGameMode=null;nativeWorldName="";nativeCreativeAbility=false;selectedHotbarSlot=-1;
+    nativeMenu=null;
     System.out.println("Peer disconnected; cause="+(event.getCause()==null?"none":event.getCause().getClass().getSimpleName()));expiry.shutdownNow();
    }
    @Override public void packetError(PacketErrorEvent event){System.err.println("Packet error: "+event.getCause().getClass().getSimpleName());}
@@ -204,6 +223,8 @@ public final class LocalArenaPeer {
    while((command=reader.readLine())!=null){
     if(command.equals("quit"))break;
     if(command.equals("status")){printStatus(client);continue;}
+    if(command.equals("menu-status")){printNativeMenuStatus();continue;}
+    if(command.equals("menu-close")){sendNativeMenuClose(client);continue;}
     if(command.length()>256||command.codePoints().anyMatch(Character::isISOControl))
      throw new IllegalArgumentException("Fixture input exceeds the safe command format");
     if(!joined&&(command.startsWith("register ")||command.equals("register")||command.startsWith("login ")||command.equals("login"))){
@@ -211,6 +232,7 @@ public final class LocalArenaPeer {
      continue;
     }
     if(command.startsWith("attack ")||command.startsWith("interact ")){sendFixtureAction(client,command);continue;}
+    if(command.startsWith("menu-click")){sendNativeMenuClick(client,command);continue;}
     if(command.equals("bow")||command.startsWith("bow ")){sendFixtureBowAction(client,command);continue;}
     if(command.equals("look")||command.startsWith("look ")){sendFixtureLook(client,command);continue;}
     if(command.startsWith("move ")){sendFixtureMove(client,command);continue;}
@@ -242,6 +264,109 @@ public final class LocalArenaPeer {
 
  private static boolean isAllowedFixtureCommand(String command) {
   return command.matches("(?:register|login|coliseu|minijogos|passaporte|sumo|batataquente|buildbattle|parkour|arco|bigornas|cores|elytra)(?: .*)?");
+ }
+
+ private static boolean isAllowedNativeMenuTitle(String title) {
+  if(title==null)return false;
+  String normalized=title.strip();
+  return normalized.equals("Minijogos CIAAC") || normalized.startsWith("CIAAC • ");
+ }
+
+ private static void observeNativeMenuContent(int containerId,int stateId,ItemStack[] items) {
+  NativeMenu current=nativeMenu;
+  if(current!=null&&containerId==current.containerId())
+   nativeMenu=new NativeMenu(current.containerId(),stateId,current.type(),current.title(),
+    Collections.unmodifiableList(Arrays.asList(items.clone())));
+ }
+
+ private static void observeNativeMenuSlot(int containerId,int stateId,int slot,ItemStack item) {
+  NativeMenu current=nativeMenu;
+  if(current!=null&&containerId==current.containerId()&&current.stateId()>=0
+    &&slot>=0&&slot<current.items().size()){
+   List<ItemStack> items=new ArrayList<>(current.items());items.set(slot,item);
+   nativeMenu=new NativeMenu(current.containerId(),stateId,current.type(),current.title(),
+    Collections.unmodifiableList(items));
+  }
+ }
+
+ private static void observeNativeMenuClose(int containerId) {
+  NativeMenu current=nativeMenu;
+  if(current!=null&&containerId==current.containerId())nativeMenu=null;
+ }
+
+ private static String safeMenuTitle(String title) {
+  String normalized=title.strip();
+  return normalized.length()>80?normalized.substring(0,80):normalized;
+ }
+
+ private static void printNativeMenuStatus() {
+  NativeMenu menu=nativeMenu;
+  if(menu==null){System.out.println("Native menu status=closed-or-unrecognized");return;}
+  int topSlots=menuSlotLimit(menu.type());
+  StringBuilder out=new StringBuilder("Native menu status=open title=").append(safeMenuTitle(menu.title()))
+   .append(" containerId=").append(menu.containerId()).append(" type=").append(menu.type())
+   .append(" stateId=").append(menu.stateId()).append(" slots=").append(topSlots);
+  for(int i=0;i<Math.min(topSlots,menu.items().size());i++){
+   ItemStack item=menu.items().get(i);
+   if(item!=null){
+    out.append(" [").append(i).append(":id=").append(item.getId()).append("x").append(item.getAmount()).append(']');
+    if(item.getDataComponentsPatch()!=null){
+     Component name=item.getDataComponentsPatch().get(DataComponentTypes.CUSTOM_NAME);
+     String label=name==null?"":plain(name);
+     if(label.matches("Formato: [1-3]v[1-3]|Equipamento: (kit|equipamento|aposta)|Lane: (auto|[0-9]{1,4})"))
+      out.append(" selection=").append(label.replace(" ",""));
+    }
+   }
+  }
+  System.out.println(out);
+ }
+
+ private static void sendNativeMenuClose(ClientSession client) {
+  NativeMenu menu=nativeMenu;
+  if(!client.isConnected()||!joined)throw new IllegalStateException("Peer has not reached the native game state");
+  if(menu==null||menu.containerId()<=0)throw new IllegalStateException("No recognized native plugin menu is open");
+  client.send(new ServerboundContainerClosePacket(menu.containerId()));
+  System.out.println("Native menu close sent; containerId="+menu.containerId());
+ }
+
+ private static void sendNativeMenuClick(ClientSession client,String command) {
+  String[] parts=command.split(" ",-1);
+  if(parts.length<2||parts.length>3||!parts[1].matches("[0-9]{1,2}"))
+   throw new IllegalArgumentException("Expected menu-click <slot 0..53> [left|right|shift|number|double|drop]");
+  int slot=Integer.parseInt(parts[1]);
+  String kind=parts.length==3?parts[2]:"left";
+  if(!Set.of("left","right","shift","number","double","drop").contains(kind))
+   throw new IllegalArgumentException("Unsupported bounded menu click type");
+  if(!client.isConnected()||!joined)throw new IllegalStateException("Peer has not reached the native game state");
+  NativeMenu menu=nativeMenu;
+  if(menu==null||menu.containerId()<=0||menu.stateId()<0)
+   throw new IllegalStateException("No recognized native menu with current server state is open");
+  int topSlots=menuSlotLimit(menu.type());
+  if(slot<0||slot>=topSlots||slot>=menu.items().size())
+   throw new IllegalArgumentException("Menu slot must be an existing top-menu slot in range 0..53");
+  ContainerActionType action;int button;int mode;
+  switch(kind){
+   case "left"->{action=ContainerActionType.CLICK_ITEM;button=0;mode=0;}
+   case "right"->{action=ContainerActionType.CLICK_ITEM;button=1;mode=0;}
+   case "shift"->{action=ContainerActionType.SHIFT_CLICK_ITEM;button=0;mode=1;}
+   case "number"->{action=ContainerActionType.MOVE_TO_HOTBAR_SLOT;button=selectedHotbarSlot;mode=2;
+    if(button<0||button>8)throw new IllegalStateException("No current server-selected hotbar slot is known");}
+   case "double"->{action=ContainerActionType.FILL_STACK;button=0;mode=6;}
+   case "drop"->{action=ContainerActionType.DROP_ITEM;button=0;mode=4;}
+   default->throw new IllegalArgumentException("Unsupported bounded menu click type");
+  }
+  var param=action==ContainerActionType.DROP_ITEM?DropItemAction.DROP_FROM_SELECTED:action.actionFrom(button,slot);
+  client.send(new ServerboundContainerClickPacket(menu.containerId(),menu.stateId(),slot,action,param,null,Map.of()));
+  System.out.println("Native menu click sent; containerId="+menu.containerId()+" stateId="+menu.stateId()
+   +" slot="+slot+" action="+kind+" mode="+mode);
+ }
+
+ private static int menuSlotLimit(String type) {
+  return switch(type){
+   case "GENERIC_9X1"->9;case "GENERIC_9X2"->18;case "GENERIC_9X3"->27;
+   case "GENERIC_9X4"->36;case "GENERIC_9X5"->45;case "GENERIC_9X6"->54;
+   case "HOPPER"->5;default->0;
+  };
  }
 
  private static int fixturePeerIndex(UUID uuid) {
@@ -688,7 +813,15 @@ public final class LocalArenaPeer {
     .contains(normalized))return "AUTH_LOGIN_SUCCESS";
   if(normalized.equals("o combate começou."))return "ARENA_COMBAT_STARTED";
   if(normalized.equals("espera um instante antes de repetires esse pedido."))return "CIAAC_RATE_LIMITED";
+  if(normalized.startsWith("grupo criado."))return "ARENA_PARTY_CREATED";
+  if(normalized.startsWith("convite enviado a "))return "ARENA_PARTY_INVITED";
+  if(normalized.startsWith("entraste no grupo de "))return "ARENA_PARTY_JOINED";
+  if(normalized.startsWith("removeste ")&&normalized.endsWith(" do grupo."))return "ARENA_PARTY_KICKED";
+  if(normalized.equals("dissolveste o grupo do coliseu."))return "ARENA_PARTY_DISBANDED";
   if(normalized.startsWith("voto registado: "))return "BUILD_BATTLE_THEME_VOTE_ACCEPTED";
+  if(normalized.equals("anéis de elytra: atravessa os anéis pela ordem indicada!"))return "ELYTRA_JOINED";
+  if(normalized.equals("não foi possível preparar o percurso; o teu estado foi protegido."))return "ELYTRA_JOIN_FAILED";
+  if(normalized.equals("o percurso de elytra ainda não está pronto."))return "ELYTRA_NOT_READY";
   if(normalized.contains("o alvo do disparo não foi reconhecido"))return "ARCHERY_TARGET_UNRECOGNIZED";
   if(normalized.contains("o resultado do disparo não foi validado"))return "ARCHERY_SCORE_REJECTED";
   if(normalized.contains("o disparo foi recusado"))return "ARCHERY_LAUNCH_REJECTED";

@@ -53,6 +53,7 @@ import com.ciaac.minecraft.minigames.paper.configuration.ResolvedHotPotatoConfig
 import com.ciaac.minecraft.minigames.paper.configuration.ResolvedModuleConfiguration;
 import com.ciaac.minecraft.minigames.paper.configuration.ResolvedParkourConfiguration;
 import com.ciaac.minecraft.minigames.paper.configuration.ResolvedSumoConfiguration;
+import com.ciaac.minecraft.minigames.paper.elytrarings.ElytraChunkPreparation;
 import com.ciaac.minecraft.minigames.paper.elytrarings.ElytraRingsController;
 import com.ciaac.minecraft.minigames.paper.elytrarings.ElytraRingsPaperSettings;
 import com.ciaac.minecraft.minigames.paper.hotpotato.HotPotatoPaperController;
@@ -553,17 +554,39 @@ public final class ConfiguredModuleAssembler implements ModuleAssembler {
                                 "Missing resolved ring region " + id))
                         .toList());
         FixedControllerPort<ElytraRingsController> port = new FixedControllerPort<>() {
+            // Keep the bounded course footprint prepared while idle, then reuse
+            // it for the first controller and release it at terminal cleanup.
+            private ElytraChunkPreparation preparation =
+                    new ElytraChunkPreparation(settings, services.plugin());
+
             @Override public ModuleStatus inactiveStatus() {
-                return waiting(GameKey.ELYTRA_RINGS, 1, "Os Anéis de Elytra estão disponíveis.");
+                ElytraChunkPreparation.Status status = preparation.status();
+                if (status.admissionReady()) {
+                    return waiting(GameKey.ELYTRA_RINGS, 1, "Os Anéis de Elytra estão disponíveis.");
+                }
+                if (status.phase() == ElytraChunkPreparation.Phase.PREPARING) {
+                    return new ModuleStatus(GameKey.ELYTRA_RINGS, ModuleAvailability.STARTING,
+                            false, 0, OptionalInt.of(1), "O percurso de Elytra está a preparar-se.");
+                }
+                return ModuleStatus.closed(GameKey.ELYTRA_RINGS,
+                        "O percurso de Elytra está temporariamente indisponível.");
             }
+
+            @Override public void tickInactive(Instant now) {
+                if (preparation.status().phase() == ElytraChunkPreparation.Phase.RELEASED) {
+                    preparation = new ElytraChunkPreparation(settings, services.plugin());
+                }
+                preparation.tick();
+            }
+
+            @Override public void shutdownInactive() { preparation.release(); }
 
             @Override public ElytraRingsController create(UUID matchId, Player initialPlayer) {
                 return new ElytraRingsController(matchId,
                         new ElytraRingsGame(matchId, initialPlayer.getUniqueId(), value.domain()),
                 settings, services.sessionCoordinator(), services.sessions(),
                 services.regionAdmissions(), services.regions(), services.temporaryItems(),
-                services.clock(), statistics,
-                new com.ciaac.minecraft.minigames.paper.elytrarings.ElytraChunkPreparation(settings, services.plugin()),
+                services.clock(), statistics, preparation,
                 session -> {
                     Player player = services.plugin().getServer().getPlayer(session.playerId());
                     var auth = services.authentication().current(session.playerId(), services.clock().instant());

@@ -28,7 +28,7 @@ final class ModuleStatuses {
         String value = Objects.requireNonNull(phase, "phase").trim().toUpperCase(java.util.Locale.ROOT);
         return switch (value) {
             case "IDLE", "WAITING" -> ModuleAvailability.WAITING;
-            case "COUNTDOWN", "ENTRY_LOCKED", "ADMITTING", "RESERVED_READY" -> ModuleAvailability.STARTING;
+            case "COUNTDOWN", "ENTRY_LOCKED", "ADMITTING", "RESERVED_READY", "THEME_VOTING" -> ModuleAvailability.STARTING;
             case "BUILDING", "RUNNING", "ACTIVE", "REACTION", "RESOLVING" -> ModuleAvailability.RUNNING;
             case "VOTING" -> ModuleAvailability.VOTING;
             case "RESULTS", "FINISHING", "RESTORING" -> ModuleAvailability.FINISHING;

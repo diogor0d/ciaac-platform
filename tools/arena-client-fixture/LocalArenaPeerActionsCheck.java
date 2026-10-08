@@ -14,6 +14,10 @@ import org.geysermc.mcprotocollib.protocol.data.game.entity.player.GameMode;
 import org.geysermc.mcprotocollib.protocol.packet.ingame.serverbound.player.*;
 import org.geysermc.mcprotocollib.protocol.packet.ingame.serverbound.level.*;
 import org.geysermc.mcprotocollib.protocol.packet.ingame.serverbound.inventory.ServerboundSetCreativeModeSlotPacket;
+import org.geysermc.mcprotocollib.protocol.packet.ingame.serverbound.inventory.ServerboundContainerClickPacket;
+import org.geysermc.mcprotocollib.protocol.packet.ingame.serverbound.inventory.ServerboundContainerClosePacket;
+import org.geysermc.mcprotocollib.protocol.data.game.inventory.ContainerActionType;
+import org.geysermc.mcprotocollib.protocol.data.game.item.ItemStack;
 public class LocalArenaPeerActionsCheck {
  static Class<?> peer=LocalArenaPeer.class;
  static int checks;
@@ -37,14 +41,61 @@ public class LocalArenaPeerActionsCheck {
   check(call("fixturePeerIndex",new Class[]{UUID.class},UUID.randomUUID()).equals(0));
   List<Object> packets=new ArrayList<>();ClientSession client=(ClientSession)Proxy.newProxyInstance(ClientSession.class.getClassLoader(),new Class[]{ClientSession.class},(self,m,a)->{if(m.getName().equals("isConnected"))return true;if(m.getName().equals("send")){packets.add(a[0]);return null;}return null;});
   field("joined",true);field("positionKnown",true);field("ownPeerIndex",1);
+  for(String title:new String[]{"Minijogos CIAAC","CIAAC • Coliseu","CIAAC • Build Battle","CIAAC • Administração"})
+   check(call("isAllowedNativeMenuTitle",new Class[]{String.class},title).equals(true));
+  for(String title:new String[]{"Inventory","Other Server Shop","minijogos ciaac","Coliseu","CIAACTools","CIAAC: Shop"})
+   check(call("isAllowedNativeMenuTitle",new Class[]{String.class},title).equals(false));
+  Class<?> nativeMenuType=Class.forName("LocalArenaPeer$NativeMenu");
+  Constructor<?> nativeMenuConstructor=nativeMenuType.getDeclaredConstructors()[0];nativeMenuConstructor.setAccessible(true);
+  ItemStack[] nativeItems=new ItemStack[27];nativeItems[4]=new ItemStack(1,1);
+  field("nativeMenu",nativeMenuConstructor.newInstance(7,19,"GENERIC_9X3","Minijogos CIAAC",Arrays.asList(nativeItems)));
+  call("observeNativeMenuContent",new Class[]{int.class,int.class,ItemStack[].class},8,99,nativeItems);
+  check(((Number)nativeMenuType.getDeclaredMethod("stateId").invoke(get("nativeMenu"))).intValue()==19);
+  call("observeNativeMenuContent",new Class[]{int.class,int.class,ItemStack[].class},7,20,nativeItems);
+  check(((Number)nativeMenuType.getDeclaredMethod("stateId").invoke(get("nativeMenu"))).intValue()==20);
+  call("observeNativeMenuSlot",new Class[]{int.class,int.class,int.class,ItemStack.class},7,21,4,new ItemStack(2,3));
+  check(((Number)nativeMenuType.getDeclaredMethod("stateId").invoke(get("nativeMenu"))).intValue()==21);
+  check(((ItemStack)((List)nativeMenuType.getDeclaredMethod("items").invoke(get("nativeMenu"))).get(4)).getId()==2);
+  packets.clear();call("sendNativeMenuClick",new Class[]{ClientSession.class,String.class},client,"menu-click 4 left");
+  check(packets.size()==1&&packets.getFirst() instanceof ServerboundContainerClickPacket);
+  ServerboundContainerClickPacket nativeClick=(ServerboundContainerClickPacket)packets.getFirst();
+  check(nativeClick.getContainerId()==7&&nativeClick.getStateId()==21&&nativeClick.getSlot()==4
+   &&nativeClick.getAction()==ContainerActionType.CLICK_ITEM&&nativeClick.getParam().getId()==0
+   &&nativeClick.getChangedSlots().isEmpty());
+  ByteBuf encoded=Unpooled.buffer();nativeClick.serialize(encoded);
+  ServerboundContainerClickPacket decodedMenuClick=new ServerboundContainerClickPacket(encoded);
+  check(decodedMenuClick.getContainerId()==7&&decodedMenuClick.getStateId()==21&&decodedMenuClick.getSlot()==4
+   &&decodedMenuClick.getAction()==ContainerActionType.CLICK_ITEM&&decodedMenuClick.getParam().getId()==0);
+  encoded.release();
+  for(String[] click:new String[][]{{"menu-click 4 right","CLICK_ITEM","1"},{"menu-click 4 shift","SHIFT_CLICK_ITEM","0"},
+    {"menu-click 4 number","MOVE_TO_HOTBAR_SLOT","0"},{"menu-click 4 double","FILL_STACK","0"},{"menu-click 4 drop","DROP_ITEM","0"}}){
+   field("selectedHotbarSlot",0);packets.clear();call("sendNativeMenuClick",new Class[]{ClientSession.class,String.class},client,click[0]);
+   ServerboundContainerClickPacket sent=(ServerboundContainerClickPacket)packets.getFirst();
+   check(sent.getAction().name().equals(click[1])&&sent.getParam().getId()==Integer.parseInt(click[2]));
+  }
+  for(String command:new String[]{"menu-click","menu-click 4 ","menu-click -1","menu-click 27","menu-click 54","menu-click 4 outside","menu-click 4 shift extra"})
+   rejected("sendNativeMenuClick",new Class[]{ClientSession.class,String.class},client,command);
+  field("selectedHotbarSlot",-1);rejected("sendNativeMenuClick",new Class[]{ClientSession.class,String.class},client,"menu-click 4 number");
+  field("nativeMenu",nativeMenuConstructor.newInstance(0,21,"GENERIC_9X3","Minijogos CIAAC",Arrays.asList(nativeItems)));
+  rejected("sendNativeMenuClick",new Class[]{ClientSession.class,String.class},client,"menu-click 4 left");
+  rejected("sendNativeMenuClose",new Class[]{ClientSession.class},client);
+  field("nativeMenu",nativeMenuConstructor.newInstance(7,-1,"GENERIC_9X3","Minijogos CIAAC",Arrays.asList(nativeItems)));
+  rejected("sendNativeMenuClick",new Class[]{ClientSession.class,String.class},client,"menu-click 4 left");
+  field("nativeMenu",nativeMenuConstructor.newInstance(7,21,"GENERIC_9X3","Minijogos CIAAC",Arrays.asList(nativeItems)));
+  packets.clear();call("sendNativeMenuClose",new Class[]{ClientSession.class},client);
+  check(packets.size()==1&&packets.getFirst() instanceof ServerboundContainerClosePacket
+   &&((ServerboundContainerClosePacket)packets.getFirst()).getContainerId()==7);
+  call("observeNativeMenuClose",new Class[]{int.class},8);check(get("nativeMenu")!=null);
+  call("observeNativeMenuClose",new Class[]{int.class},7);check(get("nativeMenu")==null);
   field("bowDrawn",false);field("outgoingSequence",1);field("yaw",45.0f);field("pitch",-20.0f);
+  packets.clear();
   Class<?> entity=Class.forName("LocalArenaPeer$FixtureEntity");Constructor<?> c=entity.getDeclaredConstructors()[0];c.setAccessible(true);
   ((Map)get("fixtureEntities")).put(2,c.newInstance(42,1.0,0.0,0.0));
   call("sendFixtureAction",new Class[]{ClientSession.class,String.class},client,"attack 2");
   check(packets.size()==3);check(packets.get(1) instanceof ServerboundSwingPacket);check(packets.get(2) instanceof ServerboundAttackPacket&&((ServerboundAttackPacket)packets.get(2)).getEntityId()==42);
   field("lastActionNanos",0L);packets.clear();call("sendFixtureAction",new Class[]{ClientSession.class,String.class},client,"interact 2");
   check(packets.size()==2);check(packets.get(1) instanceof ServerboundInteractPacket&&((ServerboundInteractPacket)packets.get(1)).getEntityId()==42);
-  ServerboundInteractPacket interaction=(ServerboundInteractPacket)packets.get(1);ByteBuf encoded=Unpooled.buffer();interaction.serialize(encoded);
+  ServerboundInteractPacket interaction=(ServerboundInteractPacket)packets.get(1);encoded=Unpooled.buffer();interaction.serialize(encoded);
   ServerboundInteractPacket decoded=new ServerboundInteractPacket(encoded);
   check(decoded.getEntityId()==42&&decoded.getHand()==interaction.getHand()&&decoded.getLocation().equals(Vector3d.from(0,1,0)));
   encoded.release();

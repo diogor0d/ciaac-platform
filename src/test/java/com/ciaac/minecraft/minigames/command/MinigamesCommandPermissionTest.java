@@ -44,11 +44,11 @@ class MinigamesCommandPermissionTest {
 
     @Test void updaterSuggestionUsesAdminPermissionAndKeepsPublicCommands() {
         MinigamesCommand command = command(new AtomicInteger());
-        List<String> publicOptions = List.of("estado", "ajuda", "top", "estatisticas");
+        List<String> publicOptions = List.of("menu", "estado", "ajuda", "top", "estatisticas");
 
         assertEquals(publicOptions, command.onTabComplete(sender(false, new ArrayList<>()), ROOT_COMMAND,
                 "minijogos", new String[] {""}));
-        assertEquals(List.of("estado", "ajuda", "top", "estatisticas", "atualizacao"),
+        assertEquals(List.of("menu", "estado", "ajuda", "top", "estatisticas", "atualizacao"),
                 command.onTabComplete(sender(true, new ArrayList<>()), ROOT_COMMAND,
                         "minijogos", new String[] {""}));
     }

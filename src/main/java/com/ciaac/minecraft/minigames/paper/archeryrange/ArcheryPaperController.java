@@ -214,6 +214,10 @@ public final class ArcheryPaperController {
         this.statistics = Objects.requireNonNull(statistics, "statistics");
     }
 
+    public synchronized List<String> menuLanes() {
+        return lanes.keySet().stream().sorted().map(String::valueOf).toList();
+    }
+
     public synchronized Status status() {
         boolean ready = settings.enabled() && allRegionsValid() && allTargetsReady();
         String message = ready ? "Livre" : "Fechado";

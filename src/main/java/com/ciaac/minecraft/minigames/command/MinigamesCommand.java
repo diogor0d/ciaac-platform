@@ -23,6 +23,7 @@ import java.util.Optional;
 import java.util.UUID;
 import java.util.function.Function;
 import java.util.function.Supplier;
+import java.util.function.BiConsumer;
 import net.kyori.adventure.text.Component;
 import net.kyori.adventure.text.event.ClickEvent;
 import net.kyori.adventure.text.event.HoverEvent;
@@ -43,6 +44,12 @@ public final class MinigamesCommand implements CommandExecutor, TabCompleter {
     private final Function<UUID, String> playerName;
     private final Supplier<Optional<UpdaterService.UpdaterOutcome>> updaterOutcome;
     private final CommandRateLimiter limiter;
+    private BiConsumer<Player, Optional<GameKey>> menuOpener;
+
+    public void menuOpener(BiConsumer<Player, Optional<GameKey>> opener) {
+        if (menuOpener != null) throw new IllegalStateException("Menu opener already bound");
+        menuOpener = Objects.requireNonNull(opener, "opener");
+    }
 
     public MinigamesCommand(
             MinigameModuleRegistry modules,
@@ -78,6 +85,7 @@ public final class MinigamesCommand implements CommandExecutor, TabCompleter {
     }
 
     private boolean handleRoot(CommandSender sender, String[] args) {
+        if (openMenu(sender, args, Optional.empty())) return true;
         String action = args.length == 0 ? "estado" : args[0].toLowerCase(Locale.ROOT);
         return switch (action) {
             case "estado" -> { showCatalog(sender); yield true; }
@@ -93,6 +101,7 @@ public final class MinigamesCommand implements CommandExecutor, TabCompleter {
     }
 
     private boolean handleGame(CommandSender sender, MinigameModule module, String[] args) {
+        if (openMenu(sender, args, Optional.of(module.key()))) return true;
         String action = args.length == 0 ? "estado" : args[0].toLowerCase(Locale.ROOT);
         if (action.equals("estado")) {
             showStatus(sender, module.status());
@@ -106,12 +115,30 @@ public final class MinigamesCommand implements CommandExecutor, TabCompleter {
             sendError(sender, "Este comando só pode ser usado por um jogador dentro do servidor.");
             return true;
         }
-        if (!limiter.allow(player.getUniqueId(), module.key().id() + ":" + action)) {
-            sendError(sender, "Espera um instante antes de repetires esse pedido.");
-            return true;
+        performGameAction(player, module.key(), action, args.length <= 1
+                ? List.of() : List.copyOf(Arrays.asList(args).subList(1, args.length)));
+        return true;
+    }
+
+    private boolean openMenu(CommandSender sender, String[] args, Optional<GameKey> game) {
+        if (menuOpener == null || !(sender instanceof Player player)
+                || !(args.length == 0 || args.length == 1 && args[0].equalsIgnoreCase("menu"))) return false;
+        menuOpener.accept(player, game);
+        return true;
+    }
+
+    /** The menu and command paths share authorization, throttling and module actions. */
+    public ModuleActionResult performGameAction(Player player, GameKey game, String action, List<String> arguments) {
+        MinigameModule module = modules.get(game);
+        if (!player.hasPermission("ciaac.minigames.use") || !player.hasPermission(GameCommandRoutes.permission(game))) {
+            ModuleActionResult denied = ModuleActionResult.rejected("PERMISSION_DENIED", "Não tens permissão para este minijogo.");
+            sendResult(player, denied);
+            return denied;
         }
-        List<String> arguments = args.length <= 1
-                ? List.of() : List.copyOf(Arrays.asList(args).subList(1, args.length));
+        if (!limiter.allow(player.getUniqueId(), module.key().id() + ":" + action)) {
+            sendError(player, "Espera um instante antes de repetires esse pedido.");
+            return ModuleActionResult.rejected("RATE_LIMITED", "Espera um instante antes de repetires esse pedido.");
+        }
         ModuleActionResult result = switch (action) {
             case "entrar" -> module.join(player, arguments);
             case "sair" -> module.leave(player);
@@ -119,7 +146,7 @@ public final class MinigamesCommand implements CommandExecutor, TabCompleter {
             default -> module.action(player, action, arguments);
         };
         sendResult(player, result);
-        return true;
+        return result;
     }
 
     private void showCatalog(CommandSender sender) {
@@ -162,6 +189,8 @@ public final class MinigamesCommand implements CommandExecutor, TabCompleter {
 
     private void showHelp(CommandSender sender) {
         sender.sendMessage(Component.text("Ajuda dos Minijogos", NamedTextColor.GOLD));
+        sender.sendMessage(Component.text("/minijogos", NamedTextColor.YELLOW)
+                .append(Component.text(" — abre o menu; cada comando de jogo também abre o respetivo menu", NamedTextColor.GRAY)));
         sender.sendMessage(Component.text("/minijogos estado", NamedTextColor.YELLOW)
                 .append(Component.text(" — estado de todos os jogos", NamedTextColor.GRAY)));
         sender.sendMessage(Component.text("/minijogos top <jogo> [regras modo]", NamedTextColor.YELLOW)
@@ -417,8 +446,8 @@ public final class MinigamesCommand implements CommandExecutor, TabCompleter {
         if (command.getName().equalsIgnoreCase("minijogos")) {
             if (args.length == 1) {
                 options = sender.hasPermission("ciaac.minigames.admin")
-                        ? List.of("estado", "ajuda", "top", "estatisticas", "atualizacao")
-                        : List.of("estado", "ajuda", "top", "estatisticas");
+                        ? List.of("menu", "estado", "ajuda", "top", "estatisticas", "atualizacao")
+                        : List.of("menu", "estado", "ajuda", "top", "estatisticas");
             }
             else if (args.length == 2 && (args[0].equalsIgnoreCase("top")
                     || args[0].equalsIgnoreCase("estatisticas"))) {
@@ -432,7 +461,7 @@ public final class MinigamesCommand implements CommandExecutor, TabCompleter {
             } else options = List.of();
         } else if (args.length == 1) {
             Optional<GameKey> game = GameCommandRoutes.game(command.getName());
-            List<String> base = new ArrayList<>(List.of("estado", "entrar", "sair", "pronto", "ajuda"));
+            List<String> base = new ArrayList<>(List.of("menu", "estado", "entrar", "sair", "pronto", "ajuda"));
             game.ifPresent(value -> {
                 if (value == GameKey.ARENA) base.addAll(List.of("grupo", "desafiar", "aceitar", "aposta"));
                 if (value == GameKey.BUILD_BATTLE) base.addAll(List.of("tema", "ver", "avaliar", "votar"));

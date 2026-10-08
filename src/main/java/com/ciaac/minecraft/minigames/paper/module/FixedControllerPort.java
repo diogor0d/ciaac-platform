@@ -18,4 +18,10 @@ public interface FixedControllerPort<C> {
     void tick(C controller, Instant now);
     void shutdown(C controller, UUID operationId);
     boolean terminal(C controller);
+
+    /** Advances resources owned while no controller is active. */
+    default void tickInactive(Instant now) { }
+
+    /** Releases resources owned while no controller is active. */
+    default void shutdownInactive() { }
 }

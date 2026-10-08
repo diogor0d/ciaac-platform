@@ -1,6 +1,6 @@
 # Documentação de funcionalidades da CIAACPlatform
 
-- Atualizado: 2026-10-07 (`Europe/Lisbon`).
+- Atualizado: 2026-10-08 (`Europe/Lisbon`).
 - Estado comum: código-fonte presente e módulos desativados ou fechados até
   validação explícita. Há verificações locais limitadas de runtime; a aceitação
   completa e integrações permanecem `UNVERIFIED`. Arena/AuthMe estão ativados
@@ -19,6 +19,9 @@ local em curso, os critérios comuns e as lacunas antes da preparação final.
 
 A [preparação de Sumo e Batata Quente](sumo-hot-potato-deployment.md) descreve
 as instalações que o operador terá de construir antes da ativação.
+
+A [navegação por menus de inventário](minigame-menus.md) documenta as opções
+do jogador, confirmações e autorização administrativa.
 
 ## Modos de minijogo
 

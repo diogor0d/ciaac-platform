@@ -1,8 +1,14 @@
 # Experiência do jogador
 
+- Atualizado: 2026-10-08 (`Europe/Lisbon`).
+
 ## Princípios comuns
 
-Cada jogo ativado apresenta a mesma vista compacta:
+Os [menus nativos](minigame-menus.md) oferecem catálogo, opções e entrada/saída
+por cliques. `/minijogos` abre o catálogo; o comando do jogo sem argumentos
+abre a sua página. Os comandos explícitos continuam disponíveis.
+
+A consulta explícita de estado apresenta a mesma vista compacta:
 
 ```text
 <nome do jogo> — <estado>
@@ -24,10 +30,12 @@ simples, sem MiniMessage, comandos, menções ou placeholders.
 Os comandos públicos são:
 
 ```text
+/minijogos
 /minijogos estado
 /minijogos ajuda
-/minijogos entrar <jogo>
-/minijogos sair
+/<comando-do-jogo>
+/<comando-do-jogo> entrar
+/<comando-do-jogo> sair
 ```
 
 A entrada verifica autenticação, permissão, mundo, região e capacidade. O jogo

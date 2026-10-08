@@ -66,6 +66,10 @@ public final class ArcheryModule implements MinigameModule {
         return Optional.ofNullable(runIds.get(Objects.requireNonNull(playerId, "playerId")));
     }
 
+    @Override public List<String> joinCompletions(List<String> arguments) {
+        return arguments.size() <= 1 ? controller.menuLanes() : List.of();
+    }
+
     @Override public synchronized ModuleActionResult join(Player player, List<String> arguments) {
         Objects.requireNonNull(arguments, "arguments");
         OptionalInt requestedLane;

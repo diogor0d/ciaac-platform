@@ -358,6 +358,10 @@ public final class ColiseumController {
                     return respond("STAKED_1V1_ONLY", "As apostas estão limitadas a desafios 1v1.");
                 }
             }
+            if (containsQueuedPlayer(challengerRoster) || containsQueuedPlayer(targetRoster)) {
+                return respond("CHALLENGE_PARTICIPANT_QUEUED",
+                        "Todos os participantes têm de sair da fila antes de aceitarem um desafio.");
+            }
             DirectChallenge challenge = new DirectChallenge(UUID.randomUUID(), challenger.getUniqueId(),
                     target.getUniqueId(), format, equipment.mode(), challengerRoster, targetRoster,
                     expiresAt, settings.formatPolicy());
@@ -376,7 +380,15 @@ public final class ColiseumController {
         if (!mainThread(target)) return respond("MAIN_THREAD_REQUIRED", "Esta operação tem de ocorrer no servidor principal.");
         DirectChallenge challenge = challenges.get(challengeId);
         ArenaEquipmentContract equipment = contractByChallenge.get(challengeId);
-        if (challenge == null || equipment == null || !challenge.accept(target.getUniqueId(), now)) {
+        if (challenge == null || equipment == null || !challenge.target().equals(target.getUniqueId())
+                || challenge.isExpired(now)) {
+            return respond("CHALLENGE_INVALID", "Esse desafio já expirou ou não é para ti.");
+        }
+        if (containsQueuedPlayer(challenge.challengerRoster()) || containsQueuedPlayer(challenge.targetRoster())) {
+            return respond("CHALLENGE_PARTICIPANT_QUEUED",
+                    "Todos os participantes têm de sair da fila antes de aceitarem um desafio.");
+        }
+        if (!challenge.accept(target.getUniqueId(), now)) {
             return respond("CHALLENGE_INVALID", "Esse desafio já expirou ou não é para ti.");
         }
         if (matches.current().isPresent()) return respond("ARENA_BUSY", "O Coliseu está ocupado neste momento.");
@@ -553,6 +565,10 @@ public final class ColiseumController {
 
     /** Exact members still waiting in queue; reserved participants remain in the match roster instead. */
     public synchronized Set<UUID> queuedPlayerIds() { return Set.copyOf(ticketByPlayer.keySet()); }
+
+    private boolean containsQueuedPlayer(TeamRoster roster) {
+        return roster.players().stream().anyMatch(ticketByPlayer::containsKey);
+    }
 
     /**
      * Moves a safely authenticated non-participant away from the configured
@@ -1166,6 +1182,11 @@ public final class ColiseumController {
         }
         formats.addAll(settings.formatPolicy().allowedAsymmetricFormats());
         return List.copyOf(formats);
+    }
+
+    /** Presentation reads the installed format policy; it cannot enable formats. */
+    public synchronized List<String> menuFormats() {
+        return supportedFormats().stream().map(ArenaFormat::toString).toList();
     }
 
     private boolean contractsCompatible(QueueMatchProposal proposal) {

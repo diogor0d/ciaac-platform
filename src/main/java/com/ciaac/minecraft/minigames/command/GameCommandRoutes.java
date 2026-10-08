@@ -44,4 +44,18 @@ public final class GameCommandRoutes {
     public static String joinCommand(GameKey game) {
         return "/" + command(game) + " entrar";
     }
+
+    public static String permission(GameKey game) {
+        return "ciaac.minigames." + switch (game) {
+            case ARENA -> "arena";
+            case BUILD_BATTLE -> "buildbattle";
+            case HOT_POTATO -> "hotpotato";
+            case KNOCKBACK_SUMO -> "sumo";
+            case CHECKPOINT_PARKOUR -> "parkour";
+            case ARCHERY_RANGE -> "archery";
+            case ANVIL_DODGE -> "anvildodge";
+            case COLOR_FLOOR -> "colorfloor";
+            case ELYTRA_RINGS -> "elytra";
+        } + ".use";
+    }
 }

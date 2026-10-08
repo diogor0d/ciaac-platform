@@ -131,7 +131,18 @@ abstract class AbstractFixedModule<C> implements MinigameModule {
 
     /** Clock-injected tick for deterministic adapter tests and scheduler bridges. */
     public synchronized void tick(Instant now) {
-        if (controller == null || faulted) return;
+        if (faulted) return;
+        if (controller == null) {
+            try {
+                port.tickInactive(Objects.requireNonNull(now, "now"));
+            } catch (RuntimeException failure) {
+                faulted = true;
+                try { port.shutdownInactive(); }
+                catch (RuntimeException recoveryFailure) { failure.addSuppressed(recoveryFailure); }
+                throw failure;
+            }
+            return;
+        }
         try {
             port.tick(controller, Objects.requireNonNull(now, "now"));
             cleanupIfTerminal();
@@ -146,7 +157,15 @@ abstract class AbstractFixedModule<C> implements MinigameModule {
     }
 
     @Override public synchronized void shutdown() {
-        if (controller == null) return;
+        if (controller == null) {
+            try {
+                port.shutdownInactive();
+            } catch (RuntimeException failure) {
+                faulted = true;
+                throw failure;
+            }
+            return;
+        }
         try {
             port.shutdown(controller, UUID.randomUUID());
             cleanupIfTerminal();

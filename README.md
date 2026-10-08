@@ -34,6 +34,11 @@ passou ensaios locais de login normal, 2v3, saída e recuperação de crash com
 cinco contas sintéticas. A migração autorizada de produção para AuthMe ocorreu
 em 2026-10-06; o nLogin foi preservado com carregamento desativado.
 
+Os [menus nativos dos nove minijogos](docs/minigame-menus.md) abrem com
+`/minijogos` ou com o comando do jogo sem argumentos. A Arena oferece formato,
+equipamento, desafios, grupos e prontidão por cliques; comandos explícitos
+continuam disponíveis. A instalação desta alteração tem aceitação própria.
+
 ## Visão geral
 
 O projeto reúne num único artefacto componentes que partilham contratos de

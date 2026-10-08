@@ -20,6 +20,8 @@ Estado em 2026-10-08:
 
 A rota em português é `/elytra`:
 
+Sem argumentos, `/elytra` abre a [página do jogo no menu](minigame-menus.md).
+
 ```text
 /elytra estado
 /elytra ajuda
@@ -43,9 +45,12 @@ feedback de reinício continuam sujeitos à matriz de validação.
 
 ## Mecânicas e ciclo de vida
 
-Elytra é um controlador fixo para um jogador. A admissão prepara apenas a área
-finita do percurso, adiciona tickets de chunks do plugin e espera até que todos
-os chunks necessários estejam carregados e tenham ticket. O jogador é
+Elytra é um controlador fixo para um jogador. Enquanto o módulo está ativo e
+sem partida, prepara a área finita do percurso e mantém os tickets de chunks
+do plugin. Só anuncia entrada disponível depois de todos os chunks necessários
+estarem carregados e terem ticket; durante a preparação anuncia preparação,
+sem criar partida, sessão ou snapshot. A admissão reutiliza essa preparação e
+volta a validar a prontidão e a autorização da região. O jogador é
 teletransportado para o início configurado e recebe uma Elytra etiquetada, além
 dos fogos de artifício configurados quando ativados. As definições Paper de
 produção aceitam apenas a entrada na próxima região ordenada exata
@@ -58,7 +63,10 @@ progresso; a tentativa seguinte começa no primeiro anel. Um timeout invalida e
 termina a tentativa. A conclusão, saída, desligação, encerramento, preparação de
 chunks em falta/com falha e falha de restauração libertam os tickets e usam a
 fronteira de recuperação da sessão. O módulo fixo só cria um novo controlador
-depois de a instância anterior atingir um estado terminal.
+depois de a instância anterior atingir um estado terminal. A preparação seguinte
+usa uma nova instância; o encerramento do plugin também liberta os tickets
+mantidos sem partida. O footprint continua limitado ao percurso e ao raio
+configurado, com o limite existente de 65 536 chunks.
 
 ## Política de mundo, região e isolamento
 

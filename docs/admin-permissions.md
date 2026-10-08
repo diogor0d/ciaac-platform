@@ -16,8 +16,12 @@ administrativos abaixo têm `default: false` no descritor.
 | --- | --- |
 | `/ciaac carrinhos recarregar` | `ciaac.minecarts.reload` |
 | `/ciaac carrinhos definir`, `predefinir`, `repor`, `repor-tudo` | `ciaac.minecarts.test` |
-| `/minijogos atualizacao` | `ciaac.minigames.admin` |
+| `/minijogos atualizacao` e menu Administração | `ciaac.minigames.admin` |
 | `/passaporte admin` | `ciaac.retention.admin.view` |
+
+O menu Administração só apresenta diagnósticos dos módulos e do atualizador.
+O botão e a ação voltam a verificar o nó efetivo; nomes de grupos e OP não
+substituem essa autorização. Ver [menus](minigame-menus.md).
 
 `atualizacao` consulta o estado do atualizador; não é um comando de implantação.
 `ciaac.retention.admin.review` e `ciaac.retention.admin.season` também começam

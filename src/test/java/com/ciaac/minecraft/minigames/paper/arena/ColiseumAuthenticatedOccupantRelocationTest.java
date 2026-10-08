@@ -7,6 +7,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import com.ciaac.minecraft.minigames.arena.ArenaEquipmentContract;
 import com.ciaac.minecraft.minigames.arena.ArenaFormatPolicy;
 import com.ciaac.minecraft.minigames.arena.ArenaLocationPolicy;
+import com.ciaac.minecraft.minigames.arena.TeamRoster;
 import com.ciaac.minecraft.minigames.core.GameKey;
 import com.ciaac.minecraft.minigames.isolation.IsolationPolicy;
 import com.ciaac.minecraft.minigames.isolation.PlayerStateGateway;
@@ -86,6 +87,76 @@ class ColiseumAuthenticatedOccupantRelocationTest {
         assertTrue(fixture.controller.relocateUnaffiliatedFloorOccupant(fixture.player));
 
         assertEquals(0, fixture.teleports);
+    }
+
+    @Test
+    void challengeCreationRejectsQueuedTargetWithoutChangingQueue() {
+        Fixture fixture = new Fixture(true);
+        assertEquals("QUEUED", fixture.controller.join(fixture.opponent, UUID.randomUUID(), "1v1",
+                ArenaEquipmentContract.fixed("fixture"), NOW).code());
+
+        var rejected = fixture.controller.challenge(fixture.player, fixture.opponent, "1v1",
+                ArenaEquipmentContract.fixed("fixture"), NOW.plusSeconds(60));
+
+        assertEquals("CHALLENGE_PARTICIPANT_QUEUED", rejected.code());
+        assertTrue(fixture.controller.queuedPlayerIds().contains(fixture.opponentId));
+        assertTrue(fixture.controller.currentMatch().isEmpty());
+    }
+
+    @Test
+    void challengeCreationRejectsQueuedNonLeaderInChallengerRoster() {
+        Fixture fixture = new Fixture(true);
+        UUID challengerAllyId = UUID.randomUUID();
+        UUID targetAllyId = UUID.randomUUID();
+        Player challengerAlly = fixture.player(challengerAllyId);
+        assertEquals("QUEUED", fixture.controller.join(challengerAlly, UUID.randomUUID(), "1v1",
+                ArenaEquipmentContract.fixed("fixture"), NOW).code());
+
+        var rejected = fixture.controller.challenge(fixture.player, fixture.opponent,
+                TeamRoster.of(fixture.playerId, challengerAllyId), TeamRoster.of(fixture.opponentId, targetAllyId),
+                "2v2", ArenaEquipmentContract.fixed("fixture"), NOW.plusSeconds(60));
+
+        assertEquals("CHALLENGE_PARTICIPANT_QUEUED", rejected.code());
+        assertTrue(fixture.controller.queuedPlayerIds().contains(challengerAllyId));
+        assertTrue(fixture.controller.currentMatch().isEmpty());
+    }
+
+    @Test
+    void challengeCreationRejectsQueuedNonLeaderInTargetRoster() {
+        Fixture fixture = new Fixture(true);
+        UUID challengerAllyId = UUID.randomUUID();
+        UUID targetAllyId = UUID.randomUUID();
+        Player targetAlly = fixture.player(targetAllyId);
+        assertEquals("QUEUED", fixture.controller.join(targetAlly, UUID.randomUUID(), "1v1",
+                ArenaEquipmentContract.fixed("fixture"), NOW).code());
+
+        var rejected = fixture.controller.challenge(fixture.player, fixture.opponent,
+                TeamRoster.of(fixture.playerId, challengerAllyId), TeamRoster.of(fixture.opponentId, targetAllyId),
+                "2v2", ArenaEquipmentContract.fixed("fixture"), NOW.plusSeconds(60));
+
+        assertEquals("CHALLENGE_PARTICIPANT_QUEUED", rejected.code());
+        assertTrue(fixture.controller.queuedPlayerIds().contains(targetAllyId));
+        assertTrue(fixture.controller.currentMatch().isEmpty());
+    }
+
+    @Test
+    void acceptanceRejectsNewQueueMembershipAndPreservesChallenge() {
+        Fixture fixture = new Fixture(true);
+        var challenge = fixture.controller.challenge(fixture.player, fixture.opponent, "1v1",
+                ArenaEquipmentContract.fixed("fixture"), NOW.plusSeconds(60));
+        assertEquals("CHALLENGE_CREATED", challenge.code());
+        UUID challengeId = challenge.matchId().orElseThrow();
+        assertEquals("QUEUED", fixture.controller.join(fixture.opponent, UUID.randomUUID(), "1v1",
+                ArenaEquipmentContract.fixed("fixture"), NOW).code());
+
+        var rejected = fixture.controller.acceptChallenge(fixture.opponent, challengeId, NOW);
+
+        assertEquals("CHALLENGE_PARTICIPANT_QUEUED", rejected.code());
+        assertTrue(fixture.controller.queuedPlayerIds().contains(fixture.opponentId));
+        assertTrue(fixture.controller.currentMatch().isEmpty());
+        assertEquals("LEFT_QUEUE", fixture.controller.leave(fixture.opponent).code());
+        assertEquals("CHALLENGE_ACCEPTED",
+                fixture.controller.acceptChallenge(fixture.opponent, challengeId, NOW).code());
     }
 
     @Test

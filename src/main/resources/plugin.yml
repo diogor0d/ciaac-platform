@@ -29,53 +29,53 @@ commands:
     usage: /passaporte [recompensas|classificacao|reclamar|personalizar|admin]
     permission: ciaac.retention.use
   minijogos:
-    description: Mostra o estado dos minijogos CIAAC.
-    usage: /minijogos [estado|ajuda|top <jogo> [regras modo]|estatisticas <jogo> [regras modo]|atualizacao]
+    description: Abre o menu dos minijogos CIAAC.
+    usage: /minijogos [menu|estado|ajuda|top <jogo> [regras modo]|estatisticas <jogo> [regras modo]|atualizacao]
     aliases: [minigames]
     permission: ciaac.minigames.use
   coliseu:
     description: Comandos do Coliseu.
-    usage: /coliseu [estado|entrar|sair|pronto|grupo|desafiar|aceitar|aposta|ajuda]
+    usage: /coliseu [menu|estado|entrar|sair|pronto|grupo|desafiar|aceitar|aposta|ajuda]
     aliases: [arena]
     permission: ciaac.minigames.arena.use
   buildbattle:
     description: Comandos do Build Battle.
-    usage: /buildbattle [estado|entrar|sair|tema|ver|avaliar|votar|ajuda]
+    usage: /buildbattle [menu|estado|entrar|sair|tema|ver|avaliar|votar|ajuda]
     aliases: [bb]
     permission: ciaac.minigames.buildbattle.use
   batataquente:
     description: Comandos do Hot Potato.
-    usage: /batataquente [estado|entrar|sair|ajuda]
+    usage: /batataquente [menu|estado|entrar|sair|ajuda]
     aliases: [hotpotato]
     permission: ciaac.minigames.hotpotato.use
   sumo:
     description: Comandos do Knockback Sumo.
-    usage: /sumo [estado|entrar|sair|pronto|ajuda]
+    usage: /sumo [menu|estado|entrar|sair|pronto|ajuda]
     aliases: [knockbacksumo]
     permission: ciaac.minigames.sumo.use
   parkour:
     description: Comandos do Parkour Cronometrado.
-    usage: /parkour [estado|entrar|sair|ajuda]
+    usage: /parkour [menu|estado|entrar|sair|ajuda]
     aliases: [checkpointparkour]
     permission: ciaac.minigames.parkour.use
   arco:
     description: Comandos do Campo de Tiro com Arco.
-    usage: /arco [estado|entrar|sair|ajuda]
+    usage: /arco [menu|estado|entrar|sair|ajuda]
     aliases: [archery]
     permission: ciaac.minigames.archery.use
   bigornas:
     description: Comandos da Fuga às Bigornas.
-    usage: /bigornas [estado|entrar|sair|ajuda]
+    usage: /bigornas [menu|estado|entrar|sair|ajuda]
     aliases: [anvildodge]
     permission: ciaac.minigames.anvildodge.use
   cores:
     description: Comandos do Chão de Cores.
-    usage: /cores [estado|entrar|sair|ajuda]
+    usage: /cores [menu|estado|entrar|sair|ajuda]
     aliases: [colorfloor]
     permission: ciaac.minigames.colorfloor.use
   elytra:
     description: Comandos dos Anéis de Elytra.
-    usage: /elytra [estado|entrar|sair|ajuda]
+    usage: /elytra [menu|estado|entrar|sair|ajuda]
     aliases: [elytrarings]
     permission: ciaac.minigames.elytra.use
 permissions:

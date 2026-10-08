@@ -22,6 +22,7 @@ import com.ciaac.minecraft.minigames.paper.MinecraftAnnouncementPublisher;
 import com.ciaac.minecraft.minigames.paper.ProgressSuppressionListener;
 import com.ciaac.minecraft.minigames.paper.RegionProtectionListener;
 import com.ciaac.minecraft.minigames.paper.SessionIsolationListener;
+import com.ciaac.minecraft.minigames.paper.MinigameMenus;
 import com.ciaac.minecraft.minigames.paper.TemporaryItemTagger;
 import com.ciaac.minecraft.minigames.paper.auth.ConnectionLifecycleListener;
 import com.ciaac.minecraft.minigames.paper.auth.NLoginAuthenticationListener;
@@ -129,6 +130,7 @@ public final class MinigamePlatformRuntime implements AutoCloseable {
     private final ConnectionRegistry connections;
     private final SessionRegistry sessions;
     private final Clock clock;
+    private final MinigameMenus menus;
     private long ticks;
 
     private MinigamePlatformRuntime(
@@ -145,7 +147,8 @@ public final class MinigamePlatformRuntime implements AutoCloseable {
             AuthenticationRegistry authentication,
             ConnectionRegistry connections,
             SessionRegistry sessions,
-            Clock clock) {
+            Clock clock,
+            MinigameMenus menus) {
         this.plugin = plugin;
         this.database = database;
         this.externalJournal = externalJournal;
@@ -160,6 +163,7 @@ public final class MinigamePlatformRuntime implements AutoCloseable {
         this.connections = connections;
         this.sessions = sessions;
         this.clock = clock;
+        this.menus = menus;
     }
 
     public static MinigamePlatformRuntime start(
@@ -455,12 +459,14 @@ public final class MinigamePlatformRuntime implements AutoCloseable {
                 }
                 monitor.tick();
                 readyDisplays.tick();
+                value.menus.tick();
             }
         }, 1L, 1L), "heartbeat task");
-        registerCommands(plugin, readyModules, statistics, clock);
+        MinigameMenus menus = registerCommands(plugin, readyModules, statistics, clock,
+                authentication, connections, sessions);
         MinigamePlatformRuntime result = new MinigamePlatformRuntime(
                 plugin, database, externalJournal, arenaWorldLedger, colorFloorWorldLedger, arenaProjectiles, readyModules, displays, heartbeat, passportRuntime,
-                authentication, connections, sessions, clock);
+                authentication, connections, sessions, clock, menus);
         runtime.set(result);
         logIsolationReadiness(plugin, stateGateway);
         return result;
@@ -490,10 +496,13 @@ public final class MinigamePlatformRuntime implements AutoCloseable {
     @Override
     public void close() {
         RuntimeException firstFailure = null;
+        try { menus.close(); }
+        catch (RuntimeException failure) { firstFailure = failure; }
         try {
             heartbeat.cancel();
         } catch (RuntimeException failure) {
-            firstFailure = failure;
+            if (firstFailure == null) firstFailure = failure;
+            else firstFailure.addSuppressed(failure);
         }
         for (var module : modules.all()) {
             try { module.shutdown(); }
@@ -699,11 +708,14 @@ public final class MinigamePlatformRuntime implements AutoCloseable {
         return recoverySafe && sessions.findByPlayer(playerId).isEmpty();
     }
 
-    private static void registerCommands(
+    private static MinigameMenus registerCommands(
             CiaacPlatformPlugin plugin,
             MinigameModuleRegistry modules,
             StatisticsRepository statistics,
-            Clock clock) {
+            Clock clock,
+            AuthenticationRegistry authentication,
+            ConnectionRegistry connections,
+            SessionRegistry sessions) {
         List<PluginCommand> commands = new ArrayList<>(COMMANDS.size());
         for (String name : COMMANDS) {
             commands.add(Objects.requireNonNull(plugin.getCommand(name),
@@ -712,10 +724,14 @@ public final class MinigamePlatformRuntime implements AutoCloseable {
         MinigamesCommand executor = new MinigamesCommand(
                 modules, Optional.of(statistics), id -> playerName(plugin, id), clock,
                 plugin::updaterOutcome);
+        MinigameMenus menus = new MinigameMenus(plugin, modules, authentication, connections, sessions, clock, executor);
+        executor.menuOpener(menus::open);
+        plugin.getServer().getPluginManager().registerEvents(menus, plugin);
         for (PluginCommand command : commands) {
             command.setExecutor(executor);
             command.setTabCompleter(executor);
         }
+        return menus;
     }
 
     private static String playerName(CiaacPlatformPlugin plugin, UUID id) {

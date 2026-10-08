@@ -562,3 +562,32 @@ aguarda todos os resultados normais e verifica consistência entre runs
 concorrentes. Crash frio permite resultado ausente ou `NO_CONTEST` e recusa
 qualquer classificação inventada; não substitui esta verificação por um resultado
 antigo de outro encontro.
+
+## Menus nativos
+
+O peer observa os IDs de janela/estado e os conteúdos emitidos pelo servidor.
+`menu-status`, `menu-click <slot> [left|right|shift|number|double|drop]` e
+`menu-close` estão limitados às janelas CIAAC do alvo de loopback. Não usa
+comandos de servidor para substituir um clique. Os logs só mostram rótulos
+limitados de formato/equipamento/lane, sem metadados arbitrários de itens.
+
+[menu_acceptance.py](menu_acceptance.py) reutiliza os portões da aceitação de
+Arena: fixture parada e sem estado pendente, hashes exatos de JAR/configuração,
+contas sintéticas existentes e pasta privada vazia. Exercita catálogo,
+recusas de transferência, opções/grupos/desafios, prontidão, nove percursos de
+entrada/saída, votos Build Battle e combate letal Arena. Compara o estado NBT
+original e os resultados duráveis. Nunca apaga dados pendentes para passar;
+a recuperação autenticada deve resolvê-los antes de repetir o ensaio.
+
+A execução usa os mesmos argumentos de [arena_acceptance.py](arena_acceptance.py),
+com `--authorized-loopback-fixture`, `--java`, `--private-output`,
+`--expected-plugin-sha256`, `--expected-config-sha256` e `--credentials`.
+Credenciais, bases, logs e NBT permanecem privados e fora de Git.
+
+Em 2026-10-08, o driver completo passou no candidato de menus
+`ec75a37a6db371795ebb5aac71feb85d16fc6368dcd2ebb4174750d5c3c43095`.
+Incluiu lane explícita Arco, duas entradas Elytra após preparação/limpeza,
+votos de tema e avaliação Build Battle e vitória letal Arena 1v1 com kit fixo.
+Os 18 campos originais foram restaurados; o servidor foi parado sem pendências.
+Os 198 checks offline e 664 testes de cada checkout também passaram.
+Os limites da execução estão na [referência dos menus](../../docs/minigame-menus.md).
